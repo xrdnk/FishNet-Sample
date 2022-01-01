@@ -1,0 +1,540 @@
+﻿using FishNet.Authenticating;
+using FishNet.Connection;
+using FishNet.Managing.Logging;
+using FishNet.Managing.Transporting;
+using FishNet.Serializing;
+using FishNet.Transporting;
+using System;
+using System.Collections.Generic;
+using UnityEngine;
+
+
+namespace FishNet.Managing.Server
+{
+    /// <summary>
+    /// A container for server data and actions.
+    /// </summary>
+    [DisallowMultipleComponent]
+    public sealed partial class ServerManager : MonoBehaviour
+    {
+        #region Public.
+        /// <summary>
+        /// Called after the local server connection state changes.
+        /// </summary>
+        public event Action<ServerConnectionStateArgs> OnServerConnectionState;
+        /// <summary>
+        /// Called when authenticator has concluded a result for a connection. Boolean is true if authentication passed, false if failed.
+        /// </summary>
+        public event Action<NetworkConnection, bool> OnAuthenticationResult;
+        /// <summary>
+        /// Called when a client state changes with the server.
+        /// </summary>
+        public event Action<NetworkConnection, RemoteConnectionStateArgs> OnRemoteConnectionState;
+        /// <summary>
+        /// True if the server connection has started.
+        /// </summary>
+        public bool Started { get; private set; }
+        /// <summary>
+        /// Handling and information for objects on the server.
+        /// </summary>
+        public ServerObjects Objects { get; private set; }
+        /// <summary>
+        /// Authenticated and non-authenticated connected clients.
+        /// </summary>
+        [HideInInspector]
+        public Dictionary<int, NetworkConnection> Clients = new Dictionary<int, NetworkConnection>();
+        /// <summary>
+        /// NetworkManager for server.
+        /// </summary>
+        [HideInInspector]
+        public NetworkManager NetworkManager { get; private set; }
+        #endregion
+
+        #region Serialized.
+        /// <summary>
+        /// 
+        /// </summary>
+        [Tooltip("Authenticator for this ServerManager. May be null if not using authentication.")]
+        [SerializeField]
+        private Authenticator _authenticator;
+        /// <summary>
+        /// Authenticator for this ServerManager. May be null if not using authentication.
+        /// </summary>
+        public Authenticator Authenticator { get => _authenticator; set => _authenticator = value; }
+        /// <summary>
+        ///  
+        /// </summary>
+        [Tooltip("Frame rate to use while only the server is active. When both server and client are active the higher of the two frame rates will be used.")]
+        [Range(1, NetworkManager.MAXIMUM_FRAMERATE)]
+        [SerializeField]
+        private ushort _frameRate = NetworkManager.MAXIMUM_FRAMERATE;
+        /// <summary>
+        /// Frame rate to use while only the server is active. When both server and client are active the higher of the two frame rates will be used.
+        /// </summary>
+        internal ushort FrameRate
+        {
+            get => _frameRate;
+            private set => _frameRate = value;
+        }
+        [SerializeField]
+        private bool _shareOwners = true;
+        /// <summary>
+        /// True to share current owner of objects with all clients. False to hide owner of objects from everyone but owner.
+        /// </summary>
+        internal bool ShareOwners => _shareOwners;
+        /// <summary>
+        /// True to automatically start the server connection when running as headless.
+        /// </summary>
+        [Tooltip("True to automatically start the server connection when running as headless.")]
+        [SerializeField]
+        private bool _startOnHeadless = true;
+        /// <summary>
+        /// 
+        /// </summary>
+        [Tooltip("True to kick clients which send data larger than the MTU.")]
+        [SerializeField]
+        private bool _limitClientMTU = true;
+        /// <summary>
+        /// True to kick clients which send data larger than the MTU.
+        /// </summary>
+        internal bool LimitClientMTU => _limitClientMTU;
+        /// <summary>
+        /// 
+        /// </summary>
+        [Tooltip("When not -1 value will override the maximum amount of data a client may send. This can be greater or less than the transport MTU.")]
+        //[Range(0, int.MaxValue)] //The range attribute is broken via Unity. It shows negative values when using int or higher as max value.
+        [SerializeField]
+        private int _maximumClientMTU;
+        /// <summary>
+        /// When not -1 value will override the maximum amount of data a client may send. This can be greater or less than the transport MTU.
+        /// </summary> 
+        public int MaximumClientMTU
+        {
+            get
+            {
+                if (LimitClientMTU)
+                    return -1;
+                else
+                    return _maximumClientMTU;
+            }
+            private set
+            {
+                _maximumClientMTU = value;
+            }
+
+        }
+        #endregion
+
+        #region Private.
+        /// <summary>
+        /// Used to read splits.
+        /// </summary>
+        private SplitReader _splitReader = new SplitReader();
+        #endregion
+
+        /// <summary>
+        /// Initializes this script for use.
+        /// </summary>
+        /// <param name="manager"></param>
+        internal void InitializeOnce(NetworkManager manager)
+        {
+            NetworkManager = manager;
+            Objects = new ServerObjects(manager);
+            InitializeRpcLinks();
+            //Unsubscribe first incase already subscribed.
+            SubscribeToTransport(false);
+            SubscribeToTransport(true);
+            NetworkManager.ClientManager.OnClientConnectionState += ClientManager_OnClientConnectionState;
+            NetworkManager.SceneManager.OnClientLoadedStartScenes += SceneManager_OnClientLoadedStartScenes;
+
+            if (_authenticator != null)
+            {
+                _authenticator.InitializeOnce(manager);
+                _authenticator.OnAuthenticationResult += _authenticator_OnAuthenticationResult;
+            }
+        }
+
+        /// <summary>
+        /// Starts the server if configured to for headless.
+        /// </summary>
+        internal void StartForHeadless()
+        {
+            if (_startOnHeadless && Application.isBatchMode)
+                NetworkManager.TransportManager.Transport.StartConnection(true);
+        }
+
+        /// <summary>
+        /// Stops the local server connection.
+        /// </summary>
+        /// <param name="sendDisconnectMessage">True to send a disconnect message to all clients first.</param>
+        public bool StopConnection(bool sendDisconnectMessage)
+        {
+            if (sendDisconnectMessage)
+            {
+                PooledWriter writer = WriterPool.GetWriter();
+                writer.WritePacketId(PacketId.Disconnect);
+                ArraySegment<byte> segment = writer.GetArraySegment();
+                //Send segment to each client, authenticated or not.
+                foreach (NetworkConnection conn in Clients.Values)
+                    conn.SendToClient((byte)Channel.Reliable, segment);
+                //Recycle writer.
+                writer.Dispose();
+                //Force an out iteration.
+                NetworkManager.TransportManager.IterateOutgoing(true);
+            }
+
+            //Return stop connection result.
+            return NetworkManager.TransportManager.Transport.StopConnection(true);
+        }
+        /// <summary>
+        /// Starts the local server connection.
+        /// </summary>
+        public void StartConnection()
+        {
+            NetworkManager.TransportManager.Transport.StartConnection(true);
+        }
+
+        /// <summary>
+        /// Called after the local client connection state changes.
+        /// </summary>
+        private void ClientManager_OnClientConnectionState(ClientConnectionStateArgs obj)
+        {
+            /* If client is doing anything but started destroy pending.
+             * Pending is only used for host mode. */
+            if (obj.ConnectionState != LocalConnectionStates.Started)
+                Objects.DestroyPending();
+        }
+
+        /// <summary>
+        /// Called when a client loads initial scenes after connecting.
+        /// </summary>
+        private void SceneManager_OnClientLoadedStartScenes(NetworkConnection conn, bool asServer)
+        {
+            if (asServer)
+                Objects.RebuildObservers(conn);
+        }
+
+        /// <summary>
+        /// Changes subscription status to transport.
+        /// </summary>
+        /// <param name="subscribe"></param>
+        private void SubscribeToTransport(bool subscribe)
+        {
+            if (NetworkManager == null || NetworkManager.TransportManager == null || NetworkManager.TransportManager.Transport == null)
+                return;
+
+            if (!subscribe)
+            {
+                NetworkManager.TransportManager.Transport.OnServerReceivedData -= Transport_OnServerReceivedData;
+                NetworkManager.TransportManager.Transport.OnServerConnectionState -= Transport_OnServerConnectionState;
+                NetworkManager.TransportManager.Transport.OnRemoteConnectionState -= Transport_OnRemoteConnectionState;
+            }
+            else
+            {
+                NetworkManager.TransportManager.Transport.OnServerReceivedData += Transport_OnServerReceivedData;
+                NetworkManager.TransportManager.Transport.OnServerConnectionState += Transport_OnServerConnectionState;
+                NetworkManager.TransportManager.Transport.OnRemoteConnectionState += Transport_OnRemoteConnectionState;
+            }
+        }
+
+        /// <summary>
+        /// Called when authenticator has concluded a result for a connection. Boolean is true if authentication passed, false if failed.
+        /// Server listens for this event automatically.
+        /// </summary>
+        private void _authenticator_OnAuthenticationResult(NetworkConnection conn, bool authenticated)
+        {
+            if (!authenticated)
+                conn.Disconnect(false);
+            else
+                ClientAuthenticated(conn);
+        }
+
+
+
+        /// <summary>
+        /// Called when a connection state changes for the local server.
+        /// </summary>
+        private void Transport_OnServerConnectionState(ServerConnectionStateArgs args)
+        {
+            /* Let the client manager know the server state is changing first.
+             * This gives the client an opportunity to clean-up or prepare
+             * before the server completes it's actions. */
+            NetworkManager.ClientManager.Objects.OnServerConnectionState(args);
+            Started = (args.ConnectionState == LocalConnectionStates.Started);
+
+            Objects.OnServerConnectionState(args);
+            //If not connected then clear clients.
+            if (args.ConnectionState != LocalConnectionStates.Started)
+                Clients.Clear();
+
+            if (args.ConnectionState == LocalConnectionStates.Started)
+            {
+                if (NetworkManager.CanLog(LoggingType.Common))
+                    Debug.Log("Server has been started.");
+            }
+            else if (args.ConnectionState == LocalConnectionStates.Stopped)
+            {
+                if (NetworkManager.CanLog(LoggingType.Common))
+                    Debug.Log("Server has been stopped.");
+            }
+
+            NetworkManager.UpdateFramerate();
+            OnServerConnectionState?.Invoke(args);
+        }
+
+        /// <summary>
+        /// Called when a connection state changes for a remote client.
+        /// </summary>
+        private void Transport_OnRemoteConnectionState(RemoteConnectionStateArgs args)
+        {
+            //If connection state is for a remote client.
+            if (args.ConnectionId >= 0)
+            {
+                //If started then add to authenticated clients.
+                if (args.ConnectionState == RemoteConnectionStates.Started)
+                {
+                    if (NetworkManager.CanLog(LoggingType.Common))
+                        Debug.Log($"Remote connection started for Id {args.ConnectionId}.");
+                    NetworkConnection conn = new NetworkConnection(NetworkManager, args.ConnectionId);
+                    Clients.Add(args.ConnectionId, conn);
+
+                    OnRemoteConnectionState?.Invoke(conn, args);
+
+                    if (Authenticator != null)
+                        Authenticator.OnRemoteConnection(conn);
+                    else
+                        ClientAuthenticated(conn);
+                }
+                //If stopping.
+                else if (args.ConnectionState == RemoteConnectionStates.Stopped)
+                {
+                    /* If client's connection is found then clean
+                     * them up from server. */
+                    if (Clients.TryGetValue(args.ConnectionId, out NetworkConnection conn))
+                    {
+                        conn.SetDisconnecting(true);
+                        OnRemoteConnectionState?.Invoke(conn, args);
+                        Clients.Remove(args.ConnectionId);
+                        Objects.ClientDisconnected(conn);
+                        conn.Reset();
+
+                        if (NetworkManager.CanLog(LoggingType.Common))
+                            Debug.Log($"Remote connection stopped for Id {args.ConnectionId}.");
+                    }
+                }
+            }
+        }
+
+        /// <summary>
+        /// Sends client their connectionId.
+        /// </summary>
+        /// <param name="connectionid"></param>
+        private void SendAuthenticated(NetworkConnection conn)
+        {
+            using (PooledWriter writer = WriterPool.GetWriter())
+            {
+                writer.WritePacketId(PacketId.Authenticated);
+                writer.WriteNetworkConnection(conn);
+                NetworkManager.TransportManager.SendToClient((byte)Channel.Reliable, writer.GetArraySegment(), conn);
+            }
+        }
+        /// <summary>
+        /// Called when the server socket receives data.
+        /// </summary>
+        private void Transport_OnServerReceivedData(ServerReceivedDataArgs args)
+        {
+            ParseReceived(args);
+        }
+
+        /// <summary>
+        /// Called when the server receives data.
+        /// </summary>
+        /// <param name="args"></param>
+        private void ParseReceived(ServerReceivedDataArgs args)
+        {
+            //Not from a valid connection.
+            if (args.ConnectionId < 0)
+                return;
+            ArraySegment<byte> segment = args.Data;
+            if (segment.Count <= TransportManager.TICK_BYTES)
+                return;
+
+            //FishNet internally splits packets so nothing should ever arrive over MTU.
+            int channelMtu = NetworkManager.TransportManager.Transport.GetMTU((byte)args.Channel);
+            //If over MTU kick client immediately.
+            if (segment.Count > channelMtu)
+            {
+                NetworkManager.TransportManager.Transport.StopConnection(args.ConnectionId, true);
+                return;
+            }
+
+            PacketId packetId = PacketId.Unset;
+#if !UNITY_EDITOR && !DEVELOPMENT_BUILD
+            try
+            {
+#endif
+            using (PooledReader reader = ReaderPool.GetReader(segment, NetworkManager))
+            {
+                NetworkManager.TimeManager.LastPacketTick = reader.ReadUInt32(AutoPackType.Unpacked);
+                /* This is a special condition where a message may arrive split.
+                * When this occurs buffer each packet until all packets are
+                * received. */
+                if (reader.PeekPacketId() == PacketId.Split)
+                {
+                    //Skip packetId.
+                    reader.ReadPacketId();
+                    /* Clients are limited to MTU size and a split message means
+                     * they exceeded MTU. This immediately results in a kick. */
+                    if (LimitClientMTU)
+                    {
+                        NetworkManager.TransportManager.Transport.StopConnection(args.ConnectionId, true);
+                        return;
+                    }
+
+                    int expectedMessages;
+                    _splitReader.GetHeader(reader, out expectedMessages);
+                    //If a maximum is set. Otherwise there are no limits on how much clients may send.
+                    if (MaximumClientMTU != -1)
+                    {
+                        /* Check to see if expected messages would exceed
+                         * maximum amount allowed to be received by the client.
+                         * This is a quick way to kick the client without
+                         * having to join messages. */
+                        int mtu = NetworkManager.TransportManager.Transport.GetMTU((byte)args.Channel);
+                        int maxAllowedSplits = Mathf.CeilToInt(MaximumClientMTU / mtu);
+                        //Too many messages will come in, kick client immediately.
+                        if (expectedMessages > maxAllowedSplits)
+                        {
+                            NetworkManager.TransportManager.Transport.StopConnection(args.ConnectionId, true);
+                            return;
+                        }
+                    }
+                    //If here split message can be written.
+                    _splitReader.Write(NetworkManager.TimeManager.LastPacketTick, reader, expectedMessages);
+
+                    /* If fullMessage returns 0 count then the split
+                     * has not written fully yet. Otherwise, if there is
+                     * data within then reinitialize reader with the
+                     * full message. */
+                    ArraySegment<byte> fullMessage = _splitReader.GetFullMessage();
+                    if (fullMessage.Count == 0)
+                        return;
+
+                    /* If here then all data has been received.
+                     * It's possible the client could have exceeded 
+                     * maximum MTU but not the maximum number of splits.
+                     * This is because the length of each split
+                     * is not written, so we don't know how much data of the
+                     * final message actually belonged to the split vs
+                     * unrelated data added afterwards. We're going to cut
+                     * the client some slack in this situation for the sake
+                     * of keeping things simple. */
+                    //Initialize reader with full message.
+                    reader.Initialize(fullMessage, NetworkManager);
+                }
+
+                //Parse reader.
+                while (reader.Remaining > 0)
+                {
+                    packetId = reader.ReadPacketId();
+                    NetworkConnection conn;
+
+                    /* Connection isn't available. This should never happen.
+                     * Force an immediate disconnect. */
+                    if (!Clients.TryGetValue(args.ConnectionId, out conn))
+                    {
+                        NetworkManager.TransportManager.Transport.StopConnection(args.ConnectionId, true);
+                        return;
+                    }
+                    /* If connection isn't authenticated and isn't a broadcast
+                     * then disconnect client. If a broadcast then process
+                     * normally; client may still become disconnected if the broadcast
+                     * does not allow to be called while not authenticated. */
+                    if (!conn.Authenticated && packetId != PacketId.Broadcast)
+                    {
+                        conn.Disconnect(true);
+                        return;
+                    }
+
+                    if (packetId == PacketId.Replicate)
+                    {
+                        Objects.ParseReplicateRpc(reader, conn, args.Channel);
+                    }
+                    else if (packetId == PacketId.ServerRpc)
+                    {
+                        Objects.ParseServerRpc(reader, conn, args.Channel);
+                    }
+                    else if (packetId == PacketId.Broadcast)
+                    {
+                        ParseBroadcast(reader, conn);
+                    }
+                    else if (packetId == PacketId.PingPong)
+                    {
+                        ParsePingPong(reader, conn);
+                    }
+                    else
+                    {
+                        if (NetworkManager.CanLog(LoggingType.Error))
+                            Debug.LogError($"Server received an unhandled PacketId of {(ushort)packetId} from connectionId {args.ConnectionId}. Remaining data has been purged.");
+                        return;
+                    }
+                }
+            }
+#if !UNITY_EDITOR && !DEVELOPMENT_BUILD
+            }
+            catch (Exception e)
+            {
+                if (NetworkManager.CanLog(LoggingType.Error))
+                    Debug.LogError($"Server encountered an error while parsing data for packetId {packetId} from connectionId {args.ConnectionId}. Client will be kicked immediately. Message: {e.Message}.");
+                //Kick client immediately.
+                NetworkManager.TransportManager.Transport.StopConnection(args.ConnectionId, true);
+            }
+#endif
+        }
+
+        /// <summary>
+        /// Parses a received PingPong.
+        /// </summary>
+        /// <param name="reader"></param>
+        /// <param name="conn"></param>
+        private void ParsePingPong(PooledReader reader, NetworkConnection conn)
+        {
+            /* //security limit how often clients can send pings.
+             * have clients use a stopwatch rather than frame time
+             * for checks to ensure it's not possible to send
+             * excessively should their game stutter then catch back up. */
+            uint clientTick = reader.ReadUInt32(AutoPackType.Unpacked);
+            if (conn.CanPingPong())
+                NetworkManager.TimeManager.SendPong(conn, clientTick);
+        }
+
+
+        /// <summary>
+        /// Called when a remote client authenticates with the server.
+        /// </summary>
+        /// <param name="connectionId"></param>
+        private void ClientAuthenticated(NetworkConnection connection)
+        {
+            /* Immediately send connectionId to client. Some transports
+            * don't give clients their remoteId, therefor it has to be sent
+            * by the ServerManager. This packet is very simple and can be built
+            * on the spot. */
+            connection.ConnectionAuthenticated();
+            SendAuthenticated(connection);
+
+            OnAuthenticationResult?.Invoke(connection, true);
+            NetworkManager.SceneManager.OnClientAuthenticated(connection);
+        }
+
+
+#if UNITY_EDITOR
+        private void OnValidate()
+        {
+
+            MaximumClientMTU = Mathf.Clamp(MaximumClientMTU, 0, int.MaxValue);
+        }
+#endif
+    }
+
+
+}

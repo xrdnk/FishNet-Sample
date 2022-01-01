@@ -1,0 +1,378 @@
+﻿using FishNet.Connection;
+using FishNet.Managing.Logging;
+using FishNet.Managing.Transporting;
+using FishNet.Serializing;
+using FishNet.Transporting;
+using System;
+using UnityEngine;
+
+namespace FishNet.Managing.Client
+{
+    /// <summary>
+    /// A container for local client data and actions.
+    /// </summary>
+    [DisallowMultipleComponent]
+    public sealed partial class ClientManager : MonoBehaviour
+    {
+        #region Public.
+        /// <summary>
+        /// Called after the local client connection state changes.
+        /// </summary>
+        public event Action<ClientConnectionStateArgs> OnClientConnectionState;
+        /// <summary>
+        /// True if the client connection is connected to the server.
+        /// </summary>
+        public bool Started { get; private set; }
+        /// <summary>
+        /// NetworkConnection the local client is using to send data to the server.
+        /// </summary>
+        public NetworkConnection Connection;
+        /// <summary>
+        /// Handling and information for objects known to the local client.
+        /// </summary>
+        public ClientObjects Objects { get; private set; }
+        /// <summary>
+        /// NetworkManager for client.
+        /// </summary>
+        [HideInInspector]
+        public NetworkManager NetworkManager { get; private set; }
+        #endregion
+
+        #region Serialized.
+        /// <summary>
+        /// 
+        /// </summary>
+        [Tooltip("Frame rate to use while only the client is active. When both server and client are active the higher of the two frame rates will be used.")]
+        [Range(1, NetworkManager.MAXIMUM_FRAMERATE)]
+        [SerializeField]
+        private ushort _frameRate = NetworkManager.MAXIMUM_FRAMERATE;
+        /// <summary>
+        /// Frame rate to use while only the client is active. When both server and client are active the higher of the two frame rates will be used.
+        /// </summary>
+        internal ushort FrameRate => _frameRate;
+        #endregion
+
+        #region Private.
+        /// <summary>
+        /// Used to read splits.
+        /// </summary>
+        private SplitReader _splitReader = new SplitReader();
+        #endregion
+
+        /// <summary>
+        /// Initializes this script for use.
+        /// </summary>
+        /// <param name="manager"></param>
+        internal void InitializeOnce(NetworkManager manager)
+        {
+            NetworkManager = manager;
+            Objects = new ClientObjects(manager);
+            Connection = NetworkManager.EmptyConnection;
+            InitializeOnceRpcLinks();
+            /* Unsubscribe before subscribing.
+             * Shouldn't be but better safe than sorry. */
+            SubscribeToEvents(false);
+            SubscribeToEvents(true);
+        }
+
+
+        /// <summary>
+        /// Changes subscription status to transport.
+        /// </summary>
+        /// <param name="subscribe"></param>
+        private void SubscribeToEvents(bool subscribe)
+        {
+            if (NetworkManager == null || NetworkManager.TransportManager == null || NetworkManager.TransportManager.Transport == null)
+                return;
+
+            if (!subscribe)
+            {
+                NetworkManager.TransportManager.OnIterateIncomingEnd -= TransportManager_OnIterateIncomingEnd;
+                NetworkManager.TransportManager.Transport.OnClientReceivedData -= Transport_OnClientReceivedData;
+                NetworkManager.TransportManager.Transport.OnClientConnectionState -= Transport_OnClientConnectionState;
+            }
+            else
+            {
+                NetworkManager.TransportManager.OnIterateIncomingEnd += TransportManager_OnIterateIncomingEnd;
+                NetworkManager.TransportManager.Transport.OnClientReceivedData += Transport_OnClientReceivedData;
+                NetworkManager.TransportManager.Transport.OnClientConnectionState += Transport_OnClientConnectionState;
+            }
+        }
+
+        /// <summary>
+        /// Stops the local client connection.
+        /// </summary>
+        public void StopConnection()
+        {
+            NetworkManager.TransportManager.Transport.StopConnection(false);
+        }
+
+        /// <summary>
+        /// Starts the local client connection.
+        /// </summary>
+        public void StartConnection()
+        {
+            NetworkManager.TransportManager.Transport.StartConnection(false);
+        }
+
+        /// <summary>
+        /// Sets the transport address and starts the local client connection.
+        /// </summary>
+        public void StartConnection(string address)
+        {
+            StartConnection(address, NetworkManager.TransportManager.Transport.GetPort());
+        }
+        /// <summary>
+        /// Sets the transport address and port, and starts the local client connection.
+        /// </summary>
+        public void StartConnection(string address, ushort port)
+        {
+            NetworkManager.TransportManager.Transport.SetClientAddress(address);
+            NetworkManager.TransportManager.Transport.SetPort(port);
+            StartConnection();
+        }
+
+        /// <summary>
+        /// Called when a connection state changes local server or client, or a remote client.
+        /// </summary>
+        /// <param name="args"></param>
+        private void Transport_OnClientConnectionState(ClientConnectionStateArgs args)
+        {
+            Objects.OnClientConnectionState(args);
+            Started = (args.ConnectionState == LocalConnectionStates.Started);
+            bool stopped = (args.ConnectionState == LocalConnectionStates.Stopped);
+
+            //Clear connection after so objects can update using current Connection value.
+            if (!Started)
+                Connection = NetworkManager.EmptyConnection; 
+
+            if (Started && NetworkManager.CanLog(LoggingType.Common))
+                Debug.Log($"Local client is connected to the server.");
+            else if (stopped && NetworkManager.CanLog(LoggingType.Common))
+                Debug.Log($"Local client is disconnected from the server.");
+
+            NetworkManager.UpdateFramerate();
+            OnClientConnectionState?.Invoke(args);
+        }
+
+        /// <summary>
+        /// Called when a socket receives data.
+        /// </summary>
+        private void Transport_OnClientReceivedData(ClientReceivedDataArgs args)
+        {
+            ParseReceived(args);
+        }
+
+        /// <summary>
+        /// Called after IterateIncoming has completed.
+        /// </summary>
+        private void TransportManager_OnIterateIncomingEnd(bool server)
+        {
+            /* Should the last packet received be a spawn or despawn
+             * then the cache won't yet be iterated because it only
+             * iterates when a packet is anything but those two. Because
+             * of such if any object caches did come in they must be iterated
+             * at the end of the incoming cycle. This isn't as clean as I'd
+             * like but it does ensure there will be no missing network object
+             * references on spawned objects. */
+            if (Started && !server)
+                Objects.IterateObjectCache();
+        }
+
+        /// <summary>
+        /// Parses received data.
+        /// </summary>
+        private void ParseReceived(ClientReceivedDataArgs args)
+        {
+            ArraySegment<byte> segment = args.Data;
+            if (segment.Count <= TransportManager.TICK_BYTES)
+                return;
+
+            PacketId packetId = PacketId.Unset;
+#if !UNITY_EDITOR && !DEVELOPMENT_BUILD
+            try
+            {
+#endif
+            using (PooledReader reader = ReaderPool.GetReader(segment, NetworkManager))
+            {
+                NetworkManager.TimeManager.LastPacketTick = reader.ReadUInt32(AutoPackType.Unpacked);
+                /* This is a special condition where a message may arrive split.
+                * When this occurs buffer each packet until all packets are
+                * received. */
+                if (reader.PeekPacketId() == PacketId.Split)
+                {
+                    //Skip packetId.
+                    reader.ReadPacketId();
+                    int expectedMessages;
+                    _splitReader.GetHeader(reader, out expectedMessages);
+                    _splitReader.Write(NetworkManager.TimeManager.LastPacketTick, reader, expectedMessages);
+                    /* If fullMessage returns 0 count then the split
+                     * has not written fully yet. Otherwise, if there is
+                     * data within then reinitialize reader with the
+                     * full message. */
+                    ArraySegment<byte> fullMessage = _splitReader.GetFullMessage();
+                    if (fullMessage.Count == 0)
+                        return;
+
+                    //Initialize reader with full message.
+                    reader.Initialize(fullMessage, NetworkManager);
+                }
+
+                while (reader.Remaining > 0)
+                {
+                    packetId = reader.ReadPacketId();
+                    bool spawnOrDespawn = (packetId == PacketId.ObjectSpawn || packetId == PacketId.ObjectDespawn);
+                    /* Length of data. Only available if using unreliable. Unreliable packets
+                     * can arrive out of order which means object orientated messages such as RPCs may
+                     * arrive after the object for which they target has already been destroyed. When this happens
+                     * on lesser solutions they just dump the entire packet. However, since FishNet batches data.
+                     * it's very likely a packet will contain more than one packetId. With this mind, length is
+                     * sent as well so if any reason the data does have to be dumped it will only be dumped for
+                     * that single packetId  but not the rest. Broadcasts don't need length either even if unreliable
+                     * because they are not object bound. */
+
+                    //Is spawn or despawn; cache packet.
+                    if (spawnOrDespawn)
+                    {
+                        if (packetId == PacketId.ObjectSpawn)
+                            Objects.CacheSpawn(reader);
+                        else if (packetId == PacketId.ObjectDespawn)
+                            Objects.CacheDespawn(reader);
+                    }
+                    //Not spawn or despawn.
+                    else
+                    {
+                        /* Iterate object cache should any of the
+                         * incoming packets rely on it. Objects
+                         * in cache will always be received before any messages
+                         * that use them. */
+                        Objects.IterateObjectCache();
+                        //Then process packet normally.
+                        if ((ushort)packetId >= _startingLinkIndex)
+                        {
+                            Objects.ParseRpcLink(reader, (ushort)packetId, args.Channel);
+                        }
+                        else if (packetId == PacketId.Reconcile)
+                        {
+                            Objects.ParseReconcileRpc(reader, args.Channel);
+                        }
+                        else if (packetId == PacketId.ObserversRpc)
+                        {
+                            Objects.ParseObserversRpc(reader, args.Channel);
+                        }
+                        else if (packetId == PacketId.TargetRpc)
+                        {
+                            Objects.ParseTargetRpc(reader, args.Channel);
+                        }
+                        else if (packetId == PacketId.Broadcast)
+                        {
+                            ParseBroadcast(reader);
+                        }
+                        else if (packetId == PacketId.PingPong)
+                        {
+                            ParsePingPong(reader);
+                        }
+                        else if (packetId == PacketId.SyncVar)
+                        {
+                            Objects.ParseSyncType(reader, false, args.Channel);
+                        }
+                        else if (packetId == PacketId.SyncObject)
+                        {
+                            Objects.ParseSyncType(reader, true, args.Channel);
+                        }
+                        else if (packetId == PacketId.OwnershipChange)
+                        {
+                            Objects.ParseOwnershipChange(reader);
+                        }
+                        else if (packetId == PacketId.Authenticated)
+                        {
+                            ParseAuthenticated(reader);
+                        }
+                        else if (packetId == PacketId.Disconnect)
+                        {
+                            reader.Skip(reader.Remaining);
+                            StopConnection();
+                        }
+                        else
+                        {
+                            if (NetworkManager.CanLog(LoggingType.Error))
+                                Debug.LogError($"Client received an unhandled PacketId of {(ushort)packetId}. Remaining data has been purged.");
+                            return;
+                        }
+                    }
+                }
+
+                /* Iterate cache when reader is emptied.
+                 * This is incase the last packet received
+                 * was a spawned, which wouldn't trigger
+                 * the above iteration. There's no harm
+                 * in doing this check multiple times as there's
+                 * an exit early check. */
+                Objects.IterateObjectCache();
+            }
+#if !UNITY_EDITOR && !DEVELOPMENT_BUILD
+            }
+            catch (Exception e)
+            {
+                if (NetworkManager.CanLog(LoggingType.Error))
+                    Debug.LogError($"Client encountered an error while parsing data for packetId {packetId}. Message: {e.Message}.");
+            }
+#endif
+        }
+
+        /// <summary>
+        /// Parses a PingPong packet.
+        /// </summary>
+        /// <param name="reader"></param>
+        private void ParsePingPong(PooledReader reader)
+        {
+            uint clientTick = reader.ReadUInt32(AutoPackType.Unpacked);
+            NetworkManager.TimeManager.ModifyPing(clientTick);
+        }
+
+        /// <summary>
+        /// Parses a received connectionId. This is received before client receives connection state change.
+        /// </summary>
+        /// <param name="reader"></param>
+        private void ParseAuthenticated(PooledReader reader)
+        {
+            int connectionId = reader.ReadNetworkConnectionId();
+            //If only a client then make a new connection.
+            if (!NetworkManager.IsServer)
+            {
+                Connection = new NetworkConnection(NetworkManager, connectionId);
+            }
+            /* If also the server then use the servers connection
+             * for the connectionId. This is to resolve host problems
+             * where LocalConnection for client differs from the server Connection
+             * reference, which results in different ield values. */
+            else
+            {
+                if (NetworkManager.ServerManager.Clients.TryGetValue(connectionId, out NetworkConnection conn))
+                {
+                    Connection = conn;
+                }
+                else
+                {
+                    if (NetworkManager.CanLog(LoggingType.Error))
+                        Debug.LogError($"Unable to lookup LocalConnection for {connectionId} as host.");
+                    Connection = new NetworkConnection(NetworkManager, connectionId);
+                }
+            }
+
+            //Mark as authenticated.
+            Connection.ConnectionAuthenticated();
+            /* Register scene objects for all scenes
+             * after being authenticated. This is done after
+             * authentication rather than when the connection
+             * is started because if also as server an online
+             * scene may already be loaded on server, but not
+             * for client. This means the sceneLoaded unity event
+             * won't fire, and since client isn't authenticated
+            * at the connection start phase objects won't be added. */
+            Objects.RegisterAndDespawnSceneObjects();
+        }
+
+    }
+
+}
