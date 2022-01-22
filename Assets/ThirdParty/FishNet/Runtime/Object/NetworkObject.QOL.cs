@@ -1,5 +1,6 @@
 ﻿using FishNet.Connection;
 using FishNet.Managing.Logging;
+using System;
 using UnityEngine;
 
 namespace FishNet.Object
@@ -12,7 +13,7 @@ namespace FishNet.Object
         /// </summary>
         public bool IsClient => NetworkManager.IsClient;
         /// <summary>
-        /// True if only the client is active, and authenticated.
+        /// True if only the client is active and authenticated.
         /// </summary>
         public bool IsClientOnly => NetworkManager.IsClientOnly;
         /// <summary>
@@ -34,23 +35,40 @@ namespace FishNet.Object
         /// <summary>
         /// True if the local client is the owner of this object.
         /// </summary>
-        public bool IsOwner => (NetworkManager == null || !OwnerIsValid || !IsClient) ? false : (NetworkManager.ClientManager.Connection == Owner);
+        public bool IsOwner => (NetworkManager == null || !Owner.IsValid || !IsClient) ? false : (NetworkManager.ClientManager.Connection == Owner);
+        /// <summary>
+        /// 
+        /// </summary>
+        private NetworkConnection _owner;
         /// <summary>
         /// Owner of this object.
         /// </summary>
-        public NetworkConnection Owner { get; private set; }
+        public NetworkConnection Owner
+        {
+            get
+            {
+                //Ensures a null Owner is never returned.
+                if (_owner == null)
+                    return FishNet.Managing.NetworkManager.EmptyConnection;
+
+                return _owner;
+            }
+            private set { _owner = value; }
+        }
         /// <summary>
         /// True if there is an owner.
         /// </summary>
+        [Obsolete("Use Owner.IsValid instead.")] //Remove on 2022/06/01
         public bool OwnerIsValid => (Owner == null) ? false : Owner.IsValid;
         /// <summary>
         /// True if there is an owner and their connect is active. This will return false if there is no owner, or if the connection is disconnecting.
         /// </summary>
+        [Obsolete("Use Owner.IsValid instead.")] //Remove on 2022/06/01
         public bool OwnerIsActive => (Owner == null) ? false : Owner.IsActive;
         /// <summary>
         /// ClientId for this NetworkObject owner.
         /// </summary>
-        public int OwnerId => (!OwnerIsValid) ? -1 : Owner.ClientId;
+        public int OwnerId => (!Owner.IsValid) ? -1 : Owner.ClientId;
         /// <summary>
         /// True if the object is initialized for the network.
         /// </summary>

@@ -126,13 +126,14 @@ namespace FishNet.Object
         {
             /* If deinitializing and an owner exist
              * then remove object from owner. */
-            if (Deinitializing && OwnerIsValid)
+            if (Deinitializing && Owner.IsValid)
                 Owner.RemoveObject(this);
         }
 
         private void OnDestroy()
         {
-            if (OwnerIsValid)
+            //Does this need to be here? I'm thinking no, remove it and examine later. //todo
+            if (Owner.IsValid)
                 Owner.RemoveObject(this);
             //Already being deinitialized by FishNet.
             if (Deinitializing)
@@ -161,9 +162,10 @@ namespace FishNet.Object
              * disabled, but not deinitialized. But in the scenario
              * the object is unexpectedly destroyed, which is how we
              * arrive here, the object needs to be removed from owner. */
-            if (OwnerIsValid)
+            if (Owner.IsValid)
                 Owner.RemoveObject(this);
 
+            Observers.Clear();
             Deinitializing = true;
         }
 
@@ -227,7 +229,7 @@ namespace FishNet.Object
                     int written;
                     //Iterate all cached transforms and get networkbehaviours.
                     ListCache<NetworkBehaviour> nbCache = ListCaches.NetworkBehaviourCache;
-                    nbCache.Reset();                    
+                    nbCache.Reset();
                     written = transformCache.Written;
                     List<Transform> ts = transformCache.Collection;
                     //
@@ -281,7 +283,6 @@ namespace FishNet.Object
         internal void Deinitialize(bool asServer)
         {
             InvokeStopCallbacks(asServer);
-
             if (asServer)
             {
                 Deinitializing = true;
@@ -294,6 +295,9 @@ namespace FishNet.Object
 
                 RemoveClientRpcLinkIndexes();
             }
+
+            if (asServer)
+                Observers.Clear();
         }
 
         ///// <summary>
@@ -388,7 +392,7 @@ namespace FishNet.Object
                     writer.WriteNetworkObject(this);
                     writer.WriteNetworkConnection(Owner);
                     //If sharing then send to all observers.
-                    if (NetworkManager.ServerManager.ShareOwners)
+                    if (NetworkManager.ServerManager.ShareIds)
                     {
                         NetworkManager.TransportManager.SendToClients((byte)Channel.Reliable, writer.GetArraySegment(), this);
                     }
@@ -412,15 +416,8 @@ namespace FishNet.Object
         /// </summary>
         /// <param name="owner"></param>
         /// <param name="allowNull"></param>
-        private void SetOwner(NetworkConnection owner, bool allowNull = false)
+        private void SetOwner(NetworkConnection owner)
         {
-            if (!allowNull && owner == null)
-            {
-                NetworkManager nm = InstanceFinder.NetworkManager;
-                if (nm != null)
-                    owner = nm.EmptyConnection;
-            }
-
             Owner = owner;
         }
 

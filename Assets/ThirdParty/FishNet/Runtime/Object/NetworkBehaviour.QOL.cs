@@ -2,6 +2,7 @@
 using FishNet.Managing;
 using FishNet.Managing.Logging;
 using FishNet.Managing.Timing;
+using System;
 using UnityEngine;
 
 namespace FishNet.Object
@@ -26,7 +27,7 @@ namespace FishNet.Object
         /// </summary>
         public bool IsClient => (NetworkObject == null) ? false : NetworkObject.IsClient;
         /// <summary>
-        /// True if only the client is active, and authenticated.
+        /// True if only the client is active and authenticated.
         /// </summary>
         public bool IsClientOnly => (NetworkObject == null) ? false : NetworkObject.IsClientOnly;
         /// <summary>
@@ -52,15 +53,27 @@ namespace FishNet.Object
         /// <summary>
         /// Owner of this object.
         /// </summary>
-        public NetworkConnection Owner => (NetworkObject == null) ? null : NetworkObject.Owner;
+        public NetworkConnection Owner
+        {
+            get
+            {
+                //Ensures a null Owner is never returned.
+                if (NetworkObject == null)
+                    return FishNet.Managing.NetworkManager.EmptyConnection;
+
+                return NetworkObject.Owner;
+            }
+        }
         /// <summary>
         /// True if there is an owner.
         /// </summary>
         /// </summary>
+        [Obsolete("Use Owner.IsValid instead.")] //Remove on 2022/06/01
         public bool OwnerIsValid => (NetworkObject == null) ? false : NetworkObject.OwnerIsValid;
         /// <summary>
         /// True if there is an owner and their connect is active. This will return false if there is no owner, or if the connection is disconnecting.
         /// </summary>
+        [Obsolete("Use Owner.IsActive instead.")] //Remove on 2022/06/01
         public bool OwnerIsActive => (NetworkObject == null) ? false : NetworkObject.OwnerIsActive;
         /// <summary>
         /// ClientId for this NetworkObject owner.

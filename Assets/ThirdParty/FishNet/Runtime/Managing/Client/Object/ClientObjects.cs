@@ -46,9 +46,9 @@ namespace FishNet.Managing.Client
             /* If not started and client is active then deinitialize
              * client objects first. This will let the deinit calls
              * perform before the server destroys them. Ideally this
-             * would be done when the user shows intend to shutdown
+             * would be done when the user shows intent to shutdown
              * the server, but realistically planning for server socket
-             * drops is a much more universal solution. 
+             * drops is a much more universal solution.
              *
              * Calling StopConnection on the client will set it's local state
              * to Stopping which will result in a deinit. */
@@ -282,14 +282,23 @@ namespace FishNet.Managing.Client
             {
                 //If local client is owner then use localconnection reference.
                 NetworkConnection localConnection = base.NetworkManager.ClientManager.Connection;
-                NetworkConnection owner = (ownerId == localConnection.ClientId) ?
-                    localConnection : new NetworkConnection(NetworkManager, ownerId);
-
+                NetworkConnection owner;
+                //If owner is self.
+                if (ownerId == localConnection.ClientId)
+                {
+                    owner = localConnection;
+                }
+                else
+                {
+                    /* If owner cannot be found then share owners
+                     * is disabled */
+                    if (!base.NetworkManager.ClientManager.Clients.TryGetValue(ownerId, out owner))
+                        owner = NetworkManager.EmptyConnection;
+                }
                 nob.PreInitialize(NetworkManager, objectId, owner, false);
             }
 
             _objectCache.AddSpawn(nob, rpcLinks, syncValues, NetworkManager);
-            base.AddToSpawned(nob);
         }
 
         /// <summary>

@@ -728,6 +728,9 @@ namespace FishNet.Serializing
             if (result == null && _networkManager.ServerManager.Started)
                 _networkManager.ServerManager.Objects.Spawned.TryGetValue(objectId, out result);
 
+            /* Do not error if not found because packet could
+             * have been sent unreliably and arrived after the object
+             * was destroyed. //improvement opportunity. */
             return result;
         }
 
@@ -759,6 +762,9 @@ namespace FishNet.Serializing
             if (result == null && _networkManager.ServerManager.Started)
                 _networkManager.ServerManager.Objects.Spawned.TryGetValue(objectId, out result);
 
+            /* Do not error if not found because packet could
+             * have been sent unreliably and arrived after the object
+             * was destroyed. //improvement opportunity. */
             return result;
         }
 
@@ -780,7 +786,16 @@ namespace FishNet.Serializing
             else
             {
                 componentIndex = ReadByte();
-                return nob.NetworkBehaviours[componentIndex];
+                if (componentIndex < 0 || componentIndex >= nob.NetworkBehaviours.Length)
+                {
+                    if (_networkManager.CanLog(LoggingType.Error))
+                        Debug.LogError($"ComponentIndex of {componentIndex} is out of bounds on {nob.gameObject.name} [id {nob.ObjectId}] . This may occur if you have modified your gameObject/prefab without saving it, or the scene.");
+                    return null;
+                }
+                else
+                {
+                    return nob.NetworkBehaviours[componentIndex];
+                }
             }
         }
 
@@ -804,7 +819,7 @@ namespace FishNet.Serializing
                 if (componentIndex < 0 || componentIndex >= nob.NetworkBehaviours.Length)
                 {
                     if (_networkManager.CanLog(LoggingType.Error))
-                        Debug.LogError($"ComponentIndex of {componentIndex} is out of bounds on {nob.gameObject.name}. This may occur if you have modified your gameObject/prefab without saving it, or the scene.");
+                        Debug.LogError($"ComponentIndex of {componentIndex} is out of bounds on {nob.gameObject.name}, id {nob.ObjectId}. This may occur if you have modified your gameObject/prefab without saving it, or the scene.");
                     return null;
                 }
                 else
@@ -855,7 +870,7 @@ namespace FishNet.Serializing
             int value = ReadInt16();
             if (value == -1)
             {
-                return _networkManager.EmptyConnection;
+                return FishNet.Managing.NetworkManager.EmptyConnection;
             }
             else
             {
@@ -870,7 +885,7 @@ namespace FishNet.Serializing
                     {
                         if (_networkManager.CanLog(LoggingType.Warning))
                             Debug.LogWarning($"Unable to find connection for read Id {value}. An empty connection will be returned.");
-                        return _networkManager.EmptyConnection;
+                        return FishNet.Managing.NetworkManager.EmptyConnection;
                     }
                 }
                 //Try client side, will only be able to fetch against local connection.

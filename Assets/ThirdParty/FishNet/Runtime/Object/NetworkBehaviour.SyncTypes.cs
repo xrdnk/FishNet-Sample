@@ -98,9 +98,8 @@ namespace FishNet.Object
         {
             if (!IsServer)
                 return false;
-            if (NetworkObject.Observers.Count == 0)
-                return false;
-
+            //if (NetworkObject.Observers.Count == 0)
+            //    return false;
             bool alreadyDirtied = (isSyncObject) ? _syncObjectDirty : _syncVarDirty;
             if (isSyncObject)
                 _syncObjectDirty = true;
@@ -247,7 +246,7 @@ namespace FishNet.Object
                     byte channel = (byte)sb.Channel;
                     sb.ResetDirty();
                     //If ReadPermission is owner but no owner skip this syncvar write.
-                    if (sb.Settings.ReadPermission == ReadPermission.OwnerOnly && !NetworkObject.OwnerIsValid)
+                    if (sb.Settings.ReadPermission == ReadPermission.OwnerOnly && !NetworkObject.Owner.IsValid)
                         continue;
 
                     dataWritten = true;
@@ -375,7 +374,7 @@ namespace FishNet.Object
                         if (!forOwner && sb.Settings.ReadPermission == ReadPermission.OwnerOnly)
                         {
                             //If there is an owner then skip.
-                            if (NetworkObject.OwnerIsValid)
+                            if (NetworkObject.Owner.IsValid)
                                 continue;
                         }
 

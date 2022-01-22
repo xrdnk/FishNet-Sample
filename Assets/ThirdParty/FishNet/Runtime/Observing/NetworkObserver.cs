@@ -6,7 +6,7 @@ using System.Collections.Generic;
 using System.Runtime.CompilerServices;
 using UnityEngine;
 
-namespace FishNet.Observing 
+namespace FishNet.Observing
 {
     /// <summary>
     /// Controls which clients can see and get messages for an object.
@@ -51,13 +51,17 @@ namespace FishNet.Observing
         /// </summary>
         [Tooltip("Conditions connections must met to be added as an observer. Multiple conditions may be used.")]
         [SerializeField]
-        internal List<ObserverCondition> _observerConditions = new List<ObserverCondition>();        
+        internal List<ObserverCondition> _observerConditions = new List<ObserverCondition>();
         /// <summary>
         /// Conditions connections must met to be added as an observer. Multiple conditions may be used.
         /// </summary>
         public IReadOnlyList<ObserverCondition> ObserverConditions => _observerConditions;
         [APIExclude]
+#if MIRROR
+        public List<ObserverCondition> ObserverConditionsInternal
+#else
         internal List<ObserverCondition> ObserverConditionsInternal
+#endif
         {
             get => _observerConditions;
             set => _observerConditions = value;
@@ -77,10 +81,10 @@ namespace FishNet.Observing
         /// True if has timed conditions.
         /// </summary>
         private bool _hasTimedConditions;
-        ///// <summary>
-        ///// Found renderers on and beneath this object.
-        ///// </summary>
-        //private Renderer[] _renderers = new Renderer[0];
+        /// <summary>
+        /// Found renderers on and beneath this object.
+        /// </summary>
+        private Renderer[] _renderers;
         #endregion
 
         private void OnEnable()
@@ -141,7 +145,6 @@ namespace FishNet.Observing
 
 
             RegisterTimedConditions();
-            //_renderers = GetComponentsInChildren<Renderer>();
         }
 
         /// <summary>
@@ -156,8 +159,14 @@ namespace FishNet.Observing
             //True if all conditions are met.
             bool allConditionsMet = true;
 
-            //Only check if not owner. Owner should always be aware of their objects.
-            if (connection != _networkObject.Owner)
+            /* If cnnection is owner then they can see the object. */
+            bool notOwner = (connection != _networkObject.Owner);
+            /* If host and connection is the local client for host
+             * then do not update visibility for it. This will ensure
+             * objects which the host does not own will not be hidden
+             * from the host. */
+            bool notLocalConnection = !(_networkObject.IsHost && connection == _networkObject.LocalConnection);
+            if (notOwner)
             {
                 for (int i = 0; i < ObserverConditions.Count; i++)
                 {
@@ -179,11 +188,21 @@ namespace FishNet.Observing
                 }
             }
 
-            //If all conditions met.
-            if (allConditionsMet)
-                return ReturnPassedConditions(currentlyAdded);
+            //If not for the host-client connection.
+            if (notLocalConnection)
+            {
+                //If all conditions met.
+                if (allConditionsMet)
+                    return ReturnPassedConditions(currentlyAdded);
+                else
+                    return ReturnFailedCondition(currentlyAdded);
+            }
+            //Is host-client.
             else
-                return ReturnFailedCondition(currentlyAdded);
+            {
+                SetHostRenderers(allConditionsMet);
+                return ReturnPassedConditions(currentlyAdded);
+            }
         }
 
         /// <summary>
@@ -223,14 +242,9 @@ namespace FishNet.Observing
         private ObserverStateChange ReturnFailedCondition(bool currentlyAdded)
         {
             if (currentlyAdded)
-            {
-                SetRenderers(false);
                 return ObserverStateChange.Removed;
-            }
             else
-            {
                 return ObserverStateChange.Unchanged;
-            }
         }
 
         /// <summary>
@@ -241,35 +255,23 @@ namespace FishNet.Observing
         private ObserverStateChange ReturnPassedConditions(bool currentlyAdded)
         {
             if (currentlyAdded)
-            {
                 return ObserverStateChange.Unchanged;
-            }
             else
-            {
-                SetRenderers(true);
                 return ObserverStateChange.Added;
-            }
         }
 
         /// <summary>
         /// Sets renderers enabled state.
         /// </summary>
         /// <param name="enable"></param>
-        private void SetRenderers(bool enable)
+        private void SetHostRenderers(bool enable)
         {
-            /* Currently objects that are out of visibility
-             * are despawned so there is no reason to update renderers. */
-            return;
-            ///* Don't update renderers if server only.
-            // * Nor if server and client. This is because there's
-            // * no way to really know which renderers to show as
-            // * host when scenes aren't the same for server 
-            // * and client. */
-            //if (_networkObject.IsServerOnly || (_networkObject.IsHost))
-            //    return;
+            if (_renderers == null)
+                _renderers = GetComponentsInChildren<Renderer>();
 
-            //for (int i = 0; i < _renderers.Length; i++)
-            //    _renderers[i].enabled = enable;
+            int count = _renderers.Length;
+            for (int i = 0; i < count; i++)
+                _renderers[i].enabled = enable;
         }
 
     }

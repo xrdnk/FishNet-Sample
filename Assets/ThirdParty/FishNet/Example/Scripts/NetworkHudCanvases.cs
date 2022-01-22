@@ -6,14 +6,26 @@ using UnityEngine.UI;
 
 public class NetworkHudCanvases : MonoBehaviour
 {
-    #region Public.
+    #region Types.
     /// <summary>
-    /// True to auto start server and client.
+    /// Ways the HUD will automatically start a connection.
     /// </summary>
-    public bool AutoStart = true;
+    private enum AutoStartType
+    {
+        Disabled,
+        Host,
+        Server,
+        Client
+    }
     #endregion
 
     #region Serialized.
+    /// <summary>
+    /// What connections to automatically start on play.
+    /// </summary>
+    [Tooltip("What connections to automatically start on play.")]
+    [SerializeField]
+    private AutoStartType _autoStartType = AutoStartType.Disabled;
     /// <summary>
     /// Color when socket is stopped.
     /// </summary>
@@ -62,15 +74,63 @@ public class NetworkHudCanvases : MonoBehaviour
     private LocalConnectionStates _serverState = LocalConnectionStates.Stopped;
     #endregion
 
+    void OnGUI()
+    {
+#if ENABLE_INPUT_SYSTEM        
+        string GetNextStateText(LocalConnectionStates state)
+        {
+            if (state == LocalConnectionStates.Stopped)
+                return "Start";
+            else if (state == LocalConnectionStates.Starting)
+                return "Starting";
+            else if (state == LocalConnectionStates.Stopping)
+                return "Stopping";
+            else if (state == LocalConnectionStates.Started)
+                return "Stop";
+            else
+                return "Invalid";
+        }
+
+        GUILayout.BeginArea(new Rect(16, 16, 256, 9000));
+        Vector2 defaultResolution = new Vector2(1920f, 1080f);
+        GUI.matrix = Matrix4x4.TRS(Vector3.zero, Quaternion.identity, new Vector3(Screen.width / defaultResolution.x, Screen.height / defaultResolution.y, 1));
+
+        GUIStyle style = GUI.skin.GetStyle("button");
+        int originalFontSize = style.fontSize;
+
+        Vector2 buttonSize = new Vector2(256f, 64f);
+        style.fontSize = 28;
+        //Server button.
+        if (Application.platform != RuntimePlatform.WebGLPlayer)
+        {
+            if (GUILayout.Button($"{GetNextStateText(_serverState)} Server", GUILayout.Width(buttonSize.x), GUILayout.Height(buttonSize.y)))
+                OnClick_Server();
+            GUILayout.Space(10f);
+        }
+
+        //Client button.
+        if (GUILayout.Button($"{GetNextStateText(_clientState)} Client", GUILayout.Width(buttonSize.x), GUILayout.Height(buttonSize.y)))
+            OnClick_Client();
+
+        style.fontSize = originalFontSize;
+
+        GUILayout.EndArea();
+#endif
+    }
 
     private void Start()
     {
+#if !ENABLE_INPUT_SYSTEM
         EventSystem systems = FindObjectOfType<EventSystem>();
         if (systems == null)
             gameObject.AddComponent<EventSystem>();
         BaseInputModule inputModule = FindObjectOfType<BaseInputModule>();
         if (inputModule == null)
             gameObject.AddComponent<StandaloneInputModule>();
+#else
+        _serverIndicator.transform.parent.gameObject.SetActive(false);
+        _clientIndicator.transform.parent.gameObject.SetActive(false);
+#endif
 
         _networkManager = FindObjectOfType<NetworkManager>();
         if (_networkManager == null)
@@ -86,13 +146,12 @@ public class NetworkHudCanvases : MonoBehaviour
             _networkManager.ClientManager.OnClientConnectionState += ClientManager_OnClientConnectionState;
         }
 
-        if (AutoStart)
-        {
+        if (_autoStartType == AutoStartType.Host || _autoStartType == AutoStartType.Server)
             OnClick_Server();
-            if (!Application.isBatchMode)
-                OnClick_Client();
-        }
+        if (!Application.isBatchMode && (_autoStartType == AutoStartType.Host || _autoStartType == AutoStartType.Client))
+            OnClick_Client();
     }
+
 
     private void OnDestroy()
     {

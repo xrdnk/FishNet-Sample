@@ -33,7 +33,6 @@ Transform:
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
   m_LocalPosition: {x: 0, y: 1, z: -10}
   m_LocalScale: {x: 1, y: 1, z: 1}
-  m_ConstrainProportionsScale: 0
   m_Children: []
   m_Father: {fileID: 0}
   m_RootOrder: 0
@@ -57,12 +56,10 @@ MeshRenderer:
   m_CastShadows: 1
   m_ReceiveShadows: 1
   m_DynamicOccludee: 1
-  m_StaticShadowCaster: 0
   m_MotionVectors: 1
   m_LightProbeUsage: 1
   m_ReflectionProbeUsage: 1
   m_RayTracingMode: 2
-  m_RayTraceProcedural: 0
   m_RenderingLayerMask: 1
   m_RendererPriority: 0
   m_Materials:
@@ -87,7 +84,6 @@ MeshRenderer:
   m_SortingLayerID: 0
   m_SortingLayer: 0
   m_SortingOrder: 0
-  m_AdditionalVertexStreams: {fileID: 0}
 --- !u!136 &9117857247562382208
 CapsuleCollider:
   m_ObjectHideFlags: 0
@@ -114,18 +110,18 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 26b716c41e9b56b4baafaf13a523ba2e, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  SceneTransformProperties:
-    Position: {x: 0, y: 1, z: -10}
-    Rotation: {x: 0, y: 0, z: 0, w: 1}
-    LocalScale: {x: 1, y: 1, z: 1}
-  _isNetworked: 1
-  ChildNetworkObjects: []
   NetworkObserver: {fileID: 0}
   _prefabId: 1
   _scenePathHash: 0
   _sceneId: 0
   _sceneNetworkObjects:
   - {fileID: 9117857247562382210}
+  SceneTransformProperties:
+    Position: {x: 0, y: 1, z: -10}
+    Rotation: {x: 0, y: 0, z: 0, w: 1}
+    LocalScale: {x: 1, y: 1, z: 1}
+  _isNetworked: 1
+  ChildNetworkObjects: []
 --- !u!114 &9144896207351220584
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -138,6 +134,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 6bb7bd88fd11b5d4aa7fca3d42172ab8, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
+  _addedNetworkObject: {fileID: 9117857247562382210}
   _moveRate: 5
 --- !u!143 &9144896207351220583
 CharacterController:
@@ -169,6 +166,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: a2836e36774ca1c4bbbee976e17b649c, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
+  _addedNetworkObject: {fileID: 9117857247562382210}
   _compress: 1
   _synchronizeParent: 0
   _interpolation: 2

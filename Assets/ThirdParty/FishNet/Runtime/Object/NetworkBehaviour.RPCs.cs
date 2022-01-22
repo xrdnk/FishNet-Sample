@@ -54,14 +54,14 @@ namespace FishNet.Object
         /// Registers a RPC method.
         /// Internal use.
         /// </summary>
-        /// <param name="rpcHash"></param>
+        /// <param name="hash"></param>
         /// <param name="del"></param>
         [APIExclude] //codegen this can be made protected internal then set public via codegen
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        protected internal void RegisterServerRpc(uint rpcHash, ServerRpcDelegate del)
+        protected internal void RegisterServerRpc(uint hash, ServerRpcDelegate del)
         {
-            bool contains = _serverRpcDelegates.ContainsKey(rpcHash);
-            _serverRpcDelegates[rpcHash] = del;
+            bool contains = _serverRpcDelegates.ContainsKey(hash);
+            _serverRpcDelegates[hash] = del;
             if (!contains)
                 IncreaseRpcMethodCount();
         }
@@ -69,14 +69,14 @@ namespace FishNet.Object
         /// Registers a RPC method.
         /// Internal use.
         /// </summary>
-        /// <param name="rpcHash"></param>
+        /// <param name="hash"></param>
         /// <param name="del"></param>
         [APIExclude] //codegen this can be made protected internal then set public via codegen
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        protected internal void RegisterObserversRpc(uint rpcHash, ClientRpcDelegate del)
+        protected internal void RegisterObserversRpc(uint hash, ClientRpcDelegate del)
         {
-            bool contains = _observersRpcDelegates.ContainsKey(rpcHash);
-            _observersRpcDelegates[rpcHash] = del;
+            bool contains = _observersRpcDelegates.ContainsKey(hash);
+            _observersRpcDelegates[hash] = del;
             if (!contains)
                 IncreaseRpcMethodCount();
         }
@@ -84,14 +84,14 @@ namespace FishNet.Object
         /// Registers a RPC method.
         /// Internal use.
         /// </summary>
-        /// <param name="rpcHash"></param>
+        /// <param name="hash"></param>
         /// <param name="del"></param>
         [APIExclude] //codegen this can be made protected internal then set public via codegen
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        protected internal void RegisterTargetRpc(uint rpcHash, ClientRpcDelegate del)
+        protected internal void RegisterTargetRpc(uint hash, ClientRpcDelegate del)
         {
-            bool contains = _targetRpcDelegates.ContainsKey(rpcHash);
-            _targetRpcDelegates[rpcHash] = del;
+            bool contains = _targetRpcDelegates.ContainsKey(hash);
+            _targetRpcDelegates[hash] = del;
             if (!contains)
                 IncreaseRpcMethodCount();
         }
@@ -141,7 +141,7 @@ namespace FishNet.Object
             if (sendingClient == null)
             {
                 if (NetworkObject.NetworkManager.CanLog(LoggingType.Error))
-                    Debug.LogError($"NetworkConnection is null. ServerRpc {methodHash} will not complete. Remainder of packet may become corrupt.");
+                    Debug.LogError($"NetworkConnection is null. ServerRpc {methodHash} on object {gameObject.name} [id {ObjectId}] will not complete. Remainder of packet may become corrupt.");
                 return;
             }
 
@@ -152,7 +152,7 @@ namespace FishNet.Object
             else
             {
                 if (NetworkObject.NetworkManager.CanLog(LoggingType.Warning))
-                    Debug.LogWarning($"ServerRpc not found for hash {methodHash}. Remainder of packet may become corrupt.");
+                    Debug.LogWarning($"ServerRpc not found for hash {methodHash} on object {gameObject.name} [id {ObjectId}]. Remainder of packet may become corrupt.");
             }
         }
 
@@ -172,7 +172,7 @@ namespace FishNet.Object
             else
             {
                 if (NetworkObject.NetworkManager.CanLog(LoggingType.Warning))
-                    Debug.LogWarning($"ObserversRpc not found for hash {methodHash.Value}. Remainder of packet may become corrupt.");
+                    Debug.LogWarning($"ObserversRpc not found for hash {methodHash.Value} on object {gameObject.name} [id {ObjectId}] . Remainder of packet may become corrupt.");
             }
         }
 
@@ -192,7 +192,7 @@ namespace FishNet.Object
             else
             {
                 if (NetworkObject.NetworkManager.CanLog(LoggingType.Warning))
-                    Debug.LogWarning($"TargetRpc not found for hash {methodHash.Value}. Remainder of packet may become corrupt.");
+                    Debug.LogWarning($"TargetRpc not found for hash {methodHash.Value} on object {gameObject.name} [id {ObjectId}] . Remainder of packet may become corrupt.");
             }
         }
 
@@ -200,17 +200,17 @@ namespace FishNet.Object
         /// Sends a RPC to server.
         /// Internal use.
         /// </summary>
-        /// <param name="rpcHash"></param>
+        /// <param name="hash"></param>
         /// <param name="methodWriter"></param>
         /// <param name="channel"></param>
         [APIExclude] //codegen this can be made internal then set public via codegen
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public void SendServerRpc(uint rpcHash, PooledWriter methodWriter, Channel channel)
+        public void SendServerRpc(uint hash, PooledWriter methodWriter, Channel channel)
         {
             if (!IsSpawnedWithWarning())
                 return;
 
-            PooledWriter writer = CreateRpc(rpcHash, methodWriter, PacketId.ServerRpc, channel);
+            PooledWriter writer = CreateRpc(hash, methodWriter, PacketId.ServerRpc, channel);
             NetworkObject.NetworkManager.TransportManager.SendToServer((byte)channel, writer.GetArraySegment());
             writer.Dispose();
         }
@@ -218,21 +218,25 @@ namespace FishNet.Object
         /// Sends a RPC to observers.
         /// Internal use.
         /// </summary>
-        /// <param name="rpcHash"></param>
+        /// <param name="hash"></param>
         /// <param name="methodWriter"></param>
         /// <param name="channel"></param>
         [APIExclude] //codegen this can be made internal then set public via codegen
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public void SendObserversRpc(uint rpcHash, PooledWriter methodWriter, Channel channel, bool buffered)
+        public void SendObserversRpc(uint hash, PooledWriter methodWriter, Channel channel, bool buffered)
         {
             if (!IsSpawnedWithWarning())
                 return;
 
             PooledWriter writer;
-            if (_rpcLinks.TryGetValue(rpcHash, out RpcLinkType link))
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+            if (NetworkManager.DebugManager.ObserverRpcLinks && _rpcLinks.TryGetValue(hash, out RpcLinkType link))
+#else
+            if (_rpcLinks.TryGetValue(hash, out RpcLinkType link))
+#endif
                 writer = CreateLinkedRpc(link, methodWriter, channel);
             else
-                writer = CreateRpc(rpcHash, methodWriter, PacketId.ObserversRpc, channel);
+                writer = CreateRpc(hash, methodWriter, PacketId.ObserversRpc, channel);
 
             NetworkObject.NetworkManager.TransportManager.SendToClients((byte)channel, writer.GetArraySegment(), NetworkObject.Observers);
             /* If buffered then dispose of any already buffered
@@ -241,9 +245,9 @@ namespace FishNet.Object
              * anyway but better safe than sorry. */
             if (buffered)
             {
-                if (_bufferedRpcs.TryGetValue(rpcHash, out (PooledWriter pw, Channel ch) result))
+                if (_bufferedRpcs.TryGetValue(hash, out (PooledWriter pw, Channel ch) result))
                     result.pw.Dispose();
-                _bufferedRpcs[rpcHash] = (writer, channel);
+                _bufferedRpcs[hash] = (writer, channel);
             }
             //If not buffered then dispose immediately.
             else
@@ -256,13 +260,13 @@ namespace FishNet.Object
         /// Sends a RPC to target.
         /// Internal use.
         /// </summary>
-        /// <param name="rpcHash"></param>
+        /// <param name="hash"></param>
         /// <param name="methodWriter"></param>
         /// <param name="channel"></param>
         /// <param name="target"></param>
         [APIExclude] //codegen this can be made internal then set public via codegen
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public void SendTargetRpc(uint rpcHash, PooledWriter methodWriter, Channel channel, NetworkConnection target)
+        public void SendTargetRpc(uint hash, PooledWriter methodWriter, Channel channel, NetworkConnection target)
         {
             if (!IsSpawnedWithWarning())
                 return;
@@ -288,16 +292,21 @@ namespace FishNet.Object
                 if (!canSendTotarget)
                 {
                     if (NetworkObject.NetworkManager.CanLog(LoggingType.Warning))
-                        Debug.LogWarning($"Action cannot be completed as Target is not an observer for object {gameObject.name}");
+                        Debug.LogWarning($"Action cannot be completed as Target is not an observer for object {gameObject.name} [id {ObjectId}].");
                     return;
                 }
             }
 
             PooledWriter writer;
-            if (_rpcLinks.TryGetValue(rpcHash, out RpcLinkType link))
+
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+            if (NetworkManager.DebugManager.TargetRpcLinks && _rpcLinks.TryGetValue(hash, out RpcLinkType link))
+#else
+            if (_rpcLinks.TryGetValue(hash, out RpcLinkType link))
+#endif
                 writer = CreateLinkedRpc(link, methodWriter, channel);
             else
-                writer = CreateRpc(rpcHash, methodWriter, PacketId.TargetRpc, channel);
+                writer = CreateRpc(hash, methodWriter, PacketId.TargetRpc, channel);
 
             NetworkObject.NetworkManager.TransportManager.SendToClient((byte)channel, writer.GetArraySegment(), target);
             writer.Dispose();
@@ -314,7 +323,7 @@ namespace FishNet.Object
             if (!result)
             {
                 if (NetworkObject.NetworkManager.CanLog(LoggingType.Warning))
-                    Debug.LogWarning($"Action cannot be completed as object {gameObject.name} is not spawned.");
+                    Debug.LogWarning($"Action cannot be completed as object {gameObject.name} [Id {ObjectId}] is not spawned.");
             }
 
             return result;
@@ -324,7 +333,7 @@ namespace FishNet.Object
         /// Writes a full RPC and returns the writer.
         /// </summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private PooledWriter CreateRpc(uint rpcHash, PooledWriter methodWriter, PacketId packetId, Channel channel)
+        private PooledWriter CreateRpc(uint hash, PooledWriter methodWriter, PacketId packetId, Channel channel)
         {
             //Writer containing full packet.
             PooledWriter writer = WriterPool.GetWriter();
@@ -334,7 +343,7 @@ namespace FishNet.Object
             if (channel == Channel.Unreliable)
                 WriteUnreliableLength(writer, methodWriter.Length + _rpcHashSize);
             //Hash and data.
-            WriteRpcHash(rpcHash, writer);
+            WriteRpcHash(hash, writer);
             writer.WriteArraySegment(methodWriter.GetArraySegment());
             return writer;
         }
@@ -360,15 +369,15 @@ namespace FishNet.Object
         /// <summary>
         /// Writes rpcHash to writer.
         /// </summary>
-        /// <param name="rpcHash"></param>
+        /// <param name="hash"></param>
         /// <param name="writer"></param>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private void WriteRpcHash(uint rpcHash, PooledWriter writer)
+        private void WriteRpcHash(uint hash, PooledWriter writer)
         {
             if (_rpcHashSize == 1)
-                writer.WriteByte((byte)rpcHash);
+                writer.WriteByte((byte)hash);
             else
-                writer.WriteUInt16((byte)rpcHash);
+                writer.WriteUInt16((byte)hash);
         }
     }
 

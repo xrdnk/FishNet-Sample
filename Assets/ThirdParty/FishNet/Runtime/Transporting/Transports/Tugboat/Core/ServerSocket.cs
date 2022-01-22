@@ -1,7 +1,9 @@
 using FishNet.Managing.Logging;
 using FishNet.Transporting;
+using FishNet.Utility.Performance;
 using LiteNetLib;
 using System;
+using System.Collections;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Runtime.CompilerServices;
@@ -42,7 +44,7 @@ namespace FishNet.Tugboat.Server
         /// <summary>
         /// MTU sizes for each channel.
         /// </summary>
-        private int[] _mtus = new int[0];
+        private int _mtu;
         #endregion
         #region Queues.
         /// <summary>
@@ -56,24 +58,20 @@ namespace FishNet.Tugboat.Server
         /// <summary>
         /// Outbound messages which need to be handled.
         /// </summary>
-        private ConcurrentQueue<Packet> _outgoing = new ConcurrentQueue<Packet>();
+        private Queue<Packet> _outgoing = new Queue<Packet>();
         /// <summary>
-        /// Commands which need to be handled.
+        /// Ids to disconnect next iteration. This ensures data goes through to disconnecting remote connections. This may be removed in a later release.
         /// </summary>
-        private ConcurrentQueue<PeerCommand> _peerCommands = new ConcurrentQueue<PeerCommand>();
+        private ListCache<int> _disconnectingNext = new ListCache<int>();
+        /// <summary>
+        /// Ids to disconnect immediately.
+        /// </summary>
+        private ListCache<int> _disconnectingNow = new ListCache<int>();
         /// <summary>
         /// ConnectionEvents which need to be handled.
         /// </summary>
         private ConcurrentQueue<RemoteConnectionEvent> _remoteConnectionEvents = new ConcurrentQueue<RemoteConnectionEvent>();
         #endregion
-        /// <summary>
-        /// True if outgoing may be dequeued.
-        /// </summary>
-        private volatile bool _canDequeueOutgoing;
-        /// <summary>
-        /// Ids to disconnect next iteration. This ensures data goes through to disconnecting remote connections. This may be removed in a later release.
-        /// </summary>
-        private List<int> _disconnectsNextIteration = new List<int>();
         /// <summary>
         /// Key required to connect.
         /// </summary>
@@ -105,16 +103,10 @@ namespace FishNet.Tugboat.Server
         /// Initializes this for use.
         /// </summary>
         /// <param name="t"></param>
-        internal void Initialize(Transport t, int reliableMTU, int unreliableMTU)
+        internal void Initialize(Transport t, int unreliableMTU)
         {
             base.Transport = t;
-
-            //Set maximum MTU for each channel, and create byte buffer.
-            _mtus = new int[2]
-            {
-                reliableMTU,
-                unreliableMTU
-            };
+            _mtu = unreliableMTU;
         }
 
         /// <summary>
@@ -130,6 +122,7 @@ namespace FishNet.Tugboat.Server
             listener.PeerDisconnectedEvent += Listener_PeerDisconnectedEvent;
 
             _server = new NetManager(listener);
+            _server.MtuOverride = (_mtu + NetConstants.FragmentedHeaderTotalSize);
             bool startResult = _server.Start(_port);
 
             //If started succcessfully.
@@ -140,9 +133,8 @@ namespace FishNet.Tugboat.Server
                 //Loop long as the server is running.
                 while (!cancelToken.IsCancellationRequested)
                 {
-                    DequeueOutgoing();
-                    DequeueCommands();
                     _server?.PollEvents();
+                    Thread.Sleep(_pollTime);
                 }
             }
             //Failed to start.
@@ -162,7 +154,6 @@ namespace FishNet.Tugboat.Server
         {
             if (_taskCancelToken != null && !_taskCancelToken.IsCancellationRequested)
                 _taskCancelToken.Cancel();
-
 
             StopSocketOnThread();
         }
@@ -268,8 +259,8 @@ namespace FishNet.Tugboat.Server
             //Don't disconnect immediately, wait until next command iteration.
             if (!immediately)
             {
-                PeerCommand command = new PeerCommand(CommandTypes.DisconnectPeerNextIteration, connectionId);
-                _peerCommands.Enqueue(command);
+                _disconnectingNext.AddValue(connectionId);
+
             }
             //Disconnect immediately.
             else
@@ -296,7 +287,8 @@ namespace FishNet.Tugboat.Server
             while (_localConnectionStates.TryDequeue(out _)) ;
             base.ClearPacketQueue(ref _incoming);
             base.ClearPacketQueue(ref _outgoing);
-            while (_peerCommands.TryDequeue(out _)) ;
+            _disconnectingNext.Reset();
+            _disconnectingNow.Reset();
             while (_remoteConnectionEvents.TryDequeue(out _)) ;
         }
 
@@ -326,7 +318,7 @@ namespace FishNet.Tugboat.Server
             int channelId = (deliveryMethod == DeliveryMethod.ReliableOrdered) ?
                 0 : 1;
             //If over the MTU.
-            if (reader.AvailableBytes > _mtus[channelId])
+            if (reader.AvailableBytes > _mtu)
             {
                 _remoteConnectionEvents.Enqueue(new RemoteConnectionEvent(false, fromPeer.Id));
                 fromPeer.Disconnect();
@@ -360,35 +352,33 @@ namespace FishNet.Tugboat.Server
         /// Dequeues and processes commands.
         /// </summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private void DequeueCommands()
+        private void DequeueDisconnects()
         {
-            int disconnectNextIterationCount = 0;
-            while (_peerCommands.TryDequeue(out PeerCommand command))
-            {
-                if (command.Type == CommandTypes.DisconnectPeerNextIteration)
-                {
-                    if (_disconnectsNextIteration.Count <= disconnectNextIterationCount)
-                        _disconnectsNextIteration.Add(command.ConnectionId);
-                    else
-                        _disconnectsNextIteration[disconnectNextIterationCount] = command.ConnectionId;
+            int count;
 
-                    disconnectNextIterationCount++;
-                }
-                else if (command.Type == CommandTypes.DisconnectPeerNow)
-                {
-                    StopConnection(command.ConnectionId, true);
-                }
+            count = _disconnectingNow.Written;
+            //If there are disconnect nows.
+            if (count > 0)
+            {
+                List<int> collection = _disconnectingNow.Collection;
+                for (int i = 0; i < count; i++)
+                    StopConnection(collection[i], true);
+
+                _disconnectingNow.Reset();
             }
 
-            /* 
-             * Enqueue disconnects for next iteration. //performance
-             * Enet has a bug where data may not send out if this isn't done.
-             * Need to test if litenetlib suffers from this as well. */
-            for (int i = 0; i < disconnectNextIterationCount; i++)
-                _peerCommands.Enqueue(
-                    new PeerCommand(CommandTypes.DisconnectPeerNow, _disconnectsNextIteration[i])
-                    );
+            count = _disconnectingNext.Written;
+            //If there are disconnect next.
+            if (count > 0)
+            {
+                List<int> collection = _disconnectingNext.Collection;
+                for (int i = 0; i < count; i++)
+                    _disconnectingNow.AddValue(collection[i]);                    
+
+                _disconnectingNext.Reset();
+            }
         }
+
 
         /// <summary>
         /// Dequeues and processes outgoing.
@@ -396,10 +386,6 @@ namespace FishNet.Tugboat.Server
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void DequeueOutgoing()
         {
-            //Not allowed to send outgoing yet.
-            if (!_canDequeueOutgoing)
-                return;
-
             if (base.GetConnectionState() != LocalConnectionStates.Started || _server == null)
             {
                 //Not started, clear outgoing.
@@ -407,18 +393,22 @@ namespace FishNet.Tugboat.Server
             }
             else
             {
-                while (_outgoing.TryDequeue(out Packet outgoing))
+                
+                int count = _outgoing.Count;
+                for (int i = 0; i < count; i++)
                 {
+                    Packet outgoing = _outgoing.Dequeue();
                     int connectionId = outgoing.ConnectionId;
+
                     ArraySegment<byte> segment = outgoing.GetArraySegment();
                     DeliveryMethod dm = (outgoing.Channel == (byte)Channel.Reliable) ?
                          DeliveryMethod.ReliableOrdered : DeliveryMethod.Unreliable;
 
                     //If over the MTU.
-                    if (outgoing.Channel == (byte)Channel.Unreliable && segment.Count > _mtus[1])
+                    if (outgoing.Channel == (byte)Channel.Unreliable && segment.Count > _mtu)
                     {
                         if (base.Transport.NetworkManager.CanLog(LoggingType.Warning))
-                            Debug.LogWarning($"Server is sending of {segment.Count} length on the reliable channel, while the MTU is only {_mtus[1]}. The channel has been changed to reliable for this send.");
+                            Debug.LogWarning($"Server is sending of {segment.Count} length on the unreliable channel, while the MTU is only {_mtu}. The channel has been changed to reliable for this send.");
                         dm = DeliveryMethod.ReliableOrdered;
                     }
 
@@ -433,13 +423,12 @@ namespace FishNet.Tugboat.Server
                         NetPeer peer = GetNetPeer(connectionId, true);
                         //If peer is found.
                         if (peer != null)
-                            peer.Send(segment.Array, segment.Offset, segment.Count, dm);
+                                peer.Send(segment.Array, segment.Offset, segment.Count, dm);
                     }
 
                     outgoing.Dispose();
                 }
             }
-            _canDequeueOutgoing = false;
         }
 
         /// <summary>
@@ -447,7 +436,8 @@ namespace FishNet.Tugboat.Server
         /// </summary>
         internal void IterateOutgoing()
         {
-            _canDequeueOutgoing = true;
+            DequeueOutgoing();
+            DequeueDisconnects();
         }
 
         /// <summary>

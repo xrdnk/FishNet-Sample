@@ -4,6 +4,8 @@ using UnityEngine;
 
 namespace FishNet.Example.Scened
 {
+
+
     public class PlayerController : NetworkBehaviour
     {
         [SerializeField]
@@ -28,7 +30,7 @@ namespace FishNet.Example.Scened
             float hor = Input.GetAxisRaw("Horizontal");
             float ver = Input.GetAxisRaw("Vertical");
 
-            /* If ground cannot be found for 20 units then bump up 3 units.
+            /* If ground cannot be found for 20 units then bump up 3 units. 
              * This is just to keep player on ground if they fall through
              * when changing scenes.             */
             if (_clientAuth || (!_clientAuth && base.IsServer))

@@ -4,10 +4,11 @@ using FishNet.Managing.Logging;
 using FishNet.Managing.Transporting;
 using FishNet.Serializing;
 using FishNet.Transporting;
+using FishNet.Utility.Performance;
 using System;
 using System.Collections.Generic;
 using UnityEngine;
-
+using UnityEngine.Serialization;
 
 namespace FishNet.Managing.Server
 {
@@ -64,24 +65,25 @@ namespace FishNet.Managing.Server
         /// <summary>
         ///  
         /// </summary>
-        [Tooltip("Frame rate to use while only the server is active. When both server and client are active the higher of the two frame rates will be used.")]
+        [Tooltip("Maximum frame rate the server may run at. When as host this value runs at whichever is higher between client and server.")]
         [Range(1, NetworkManager.MAXIMUM_FRAMERATE)]
         [SerializeField]
         private ushort _frameRate = NetworkManager.MAXIMUM_FRAMERATE;
         /// <summary>
-        /// Frame rate to use while only the server is active. When both server and client are active the higher of the two frame rates will be used.
+        /// Maximum frame rate the server may run at. When as host this value runs at whichever is higher between client and server.
         /// </summary>
-        internal ushort FrameRate
-        {
-            get => _frameRate;
-            private set => _frameRate = value;
-        }
-        [SerializeField]
-        private bool _shareOwners = true;
+        internal ushort FrameRate => _frameRate;
         /// <summary>
-        /// True to share current owner of objects with all clients. False to hide owner of objects from everyone but owner.
+        /// 
         /// </summary>
-        internal bool ShareOwners => _shareOwners;
+        [Tooltip("True to share the Ids of clients and the objects they own with other clients. No sensitive information is shared.")]
+        [FormerlySerializedAs("_shareOwners")] //Remove on 2022/06/01.
+        [SerializeField]
+        private bool _shareIds = true;
+        /// <summary>
+        /// True to share the Ids of clients and the objects they own with other clients. No sensitive information is shared.
+        /// </summary>
+        internal bool ShareIds => _shareIds;
         /// <summary>
         /// True to automatically start the server connection when running as headless.
         /// </summary>
@@ -147,6 +149,8 @@ namespace FishNet.Managing.Server
             NetworkManager.ClientManager.OnClientConnectionState += ClientManager_OnClientConnectionState;
             NetworkManager.SceneManager.OnClientLoadedStartScenes += SceneManager_OnClientLoadedStartScenes;
 
+            if (_authenticator == null)
+                _authenticator = GetComponent<Authenticator>();
             if (_authenticator != null)
             {
                 _authenticator.InitializeOnce(manager);
@@ -316,6 +320,7 @@ namespace FishNet.Managing.Server
                         OnRemoteConnectionState?.Invoke(conn, args);
                         Clients.Remove(args.ConnectionId);
                         Objects.ClientDisconnected(conn);
+                        BroadcastClientConnectionChange(false, conn);
                         conn.Reset();
 
                         if (NetworkManager.CanLog(LoggingType.Common))
@@ -443,6 +448,8 @@ namespace FishNet.Managing.Server
                      * Force an immediate disconnect. */
                     if (!Clients.TryGetValue(args.ConnectionId, out conn))
                     {
+                        if (NetworkManager.CanLog(LoggingType.Common))
+                            Debug.LogError($"ConnectionId {conn.ClientId} not found within Clients. Connection will be kicked immediately.");
                         NetworkManager.TransportManager.Transport.StopConnection(args.ConnectionId, true);
                         return;
                     }
@@ -452,6 +459,8 @@ namespace FishNet.Managing.Server
                      * does not allow to be called while not authenticated. */
                     if (!conn.Authenticated && packetId != PacketId.Broadcast)
                     {
+                        if (NetworkManager.CanLog(LoggingType.Common))
+                            Debug.LogError($"ConnectionId {conn.ClientId} send a Broadcast without being authenticated. Connection will be kicked immediately.");
                         conn.Disconnect(true);
                         return;
                     }
@@ -485,7 +494,7 @@ namespace FishNet.Managing.Server
             catch (Exception e)
             {
                 if (NetworkManager.CanLog(LoggingType.Error))
-                    Debug.LogError($"Server encountered an error while parsing data for packetId {packetId} from connectionId {args.ConnectionId}. Client will be kicked immediately. Message: {e.Message}.");
+                    Debug.LogError($"Server encountered an error while parsing data for packetId {packetId} from connectionId {args.ConnectionId}. Connection will be kicked immediately. Message: {e.Message}.");
                 //Kick client immediately.
                 NetworkManager.TransportManager.Transport.StopConnection(args.ConnectionId, true);
             }
@@ -520,17 +529,76 @@ namespace FishNet.Managing.Server
             * by the ServerManager. This packet is very simple and can be built
             * on the spot. */
             connection.ConnectionAuthenticated();
+            /* Send client Ids before telling the client
+             * they are authenticated. This is important because when the client becomes
+             * authenticated they set their LocalConnection using Clients field in ClientManager,
+             * which is set after getting Ids. */
+            if (ShareIds)
+                BroadcastClientConnectionChange(true, connection);
             SendAuthenticated(connection);
 
             OnAuthenticationResult?.Invoke(connection, true);
             NetworkManager.SceneManager.OnClientAuthenticated(connection);
         }
 
+        /// <summary>
+        /// Sends a client connection state change.
+        /// </summary>
+        /// <param name="connected"></param>
+        /// <param name="id"></param>
+        private void BroadcastClientConnectionChange(bool connected, NetworkConnection conn)
+        {
+            //If sharing Ids then send all connected client Ids first if is a connected state.
+            if (ShareIds)
+            {
+                /* Send a broadcast to all authenticated clients with the clientId
+                 * that just connected. The conn client will also get this. */
+                ClientConnectionChangeBroadcast changeMsg = new ClientConnectionChangeBroadcast()
+                {
+                    Connected = connected,
+                    Id = conn.ClientId
+                };
+                Broadcast(changeMsg);
+
+                /* If state is connected then the conn client
+                 * must also receive all currently connected client ids. */
+                if (connected)
+                {
+                    //Send already connected clients to the connection that just joined.
+                    ListCache<int> lc = ListCaches.IntCache;
+                    lc.Reset();
+                    foreach (int key in Clients.Keys)
+                        lc.AddValue(key);
+
+                    ConnectedClientsBroadcast allMsg = new ConnectedClientsBroadcast()
+                    {
+                        ListCache = lc
+                    };
+                    conn.Broadcast(allMsg);
+                }
+            }
+            //If not sharing Ids then only send ConnectionChange to conn.
+            else
+            {
+                if (connected)
+                {
+                    /* Send broadcast only to the client which just disconnected.
+                     * Only send if connecting. If the client is disconnected there's no reason
+                     * to send them a disconnect msg. */
+                    ClientConnectionChangeBroadcast changeMsg = new ClientConnectionChangeBroadcast()
+                    {
+                        Connected = connected,
+                        Id = conn.ClientId
+                    };
+                    Broadcast(conn, changeMsg);
+                }
+            }
+
+        }
 
 #if UNITY_EDITOR
         private void OnValidate()
         {
-
             MaximumClientMTU = Mathf.Clamp(MaximumClientMTU, 0, int.MaxValue);
         }
 #endif

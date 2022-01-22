@@ -1,9 +1,12 @@
 ﻿using FishNet.Connection;
 using FishNet.Managing.Logging;
+using FishNet.Managing.Server;
 using FishNet.Managing.Transporting;
 using FishNet.Serializing;
 using FishNet.Transporting;
 using System;
+using System.Collections.Generic;
+using System.Text;
 using UnityEngine;
 
 namespace FishNet.Managing.Client
@@ -26,11 +29,15 @@ namespace FishNet.Managing.Client
         /// <summary>
         /// NetworkConnection the local client is using to send data to the server.
         /// </summary>
-        public NetworkConnection Connection;
+        public NetworkConnection Connection = NetworkManager.EmptyConnection;
         /// <summary>
         /// Handling and information for objects known to the local client.
         /// </summary>
         public ClientObjects Objects { get; private set; }
+        /// <summary>
+        /// All currently connected clients. This field only contains data while ServerManager.ShareIds is enabled.
+        /// </summary>
+        public Dictionary<int, NetworkConnection> Clients = new Dictionary<int, NetworkConnection>();
         /// <summary>
         /// NetworkManager for client.
         /// </summary>
@@ -42,12 +49,12 @@ namespace FishNet.Managing.Client
         /// <summary>
         /// 
         /// </summary>
-        [Tooltip("Frame rate to use while only the client is active. When both server and client are active the higher of the two frame rates will be used.")]
+        [Tooltip("Maximum frame rate the client may run at. When as host this value runs at whichever is higher between client and server.")]
         [Range(1, NetworkManager.MAXIMUM_FRAMERATE)]
         [SerializeField]
         private ushort _frameRate = NetworkManager.MAXIMUM_FRAMERATE;
         /// <summary>
-        /// Frame rate to use while only the client is active. When both server and client are active the higher of the two frame rates will be used.
+        /// Maximum frame rate the client may run at. When as host this value runs at whichever is higher between client and server.
         /// </summary>
         internal ushort FrameRate => _frameRate;
         #endregion
@@ -57,6 +64,12 @@ namespace FishNet.Managing.Client
         /// Used to read splits.
         /// </summary>
         private SplitReader _splitReader = new SplitReader();
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+        /// <summary>
+        /// Contains the last three non-split packets to arrive. This is used for debugging.
+        /// </summary>
+        private Queue<PacketId> _incomingPacketIds = new Queue<PacketId>();
+#endif
         #endregion
 
         /// <summary>
@@ -67,12 +80,44 @@ namespace FishNet.Managing.Client
         {
             NetworkManager = manager;
             Objects = new ClientObjects(manager);
-            Connection = NetworkManager.EmptyConnection;
             InitializeOnceRpcLinks();
             /* Unsubscribe before subscribing.
-             * Shouldn't be but better safe than sorry. */
+             * Shouldn't be an issue but better safe than sorry. */
             SubscribeToEvents(false);
             SubscribeToEvents(true);
+            //Listen for client connections from server.
+            RegisterBroadcast<ClientConnectionChangeBroadcast>(OnClientConnectionBroadcast);
+            RegisterBroadcast<ConnectedClientsBroadcast>(OnConnectedClientsBroadcast);
+        }
+
+
+        /// <summary>
+        /// Called when the server sends a connection state change for any client.
+        /// </summary>
+        /// <param name="args"></param>
+        private void OnClientConnectionBroadcast(ClientConnectionChangeBroadcast args)
+        {
+            if (args.Connected)
+                Clients[args.Id] = new NetworkConnection(NetworkManager, args.Id);
+            else
+                Clients.Remove(args.Id);
+        }
+
+        /// <summary>
+        /// Called when the server sends all currently connected clients.
+        /// </summary>
+        /// <param name="args"></param>
+        private void OnConnectedClientsBroadcast(ConnectedClientsBroadcast args)
+        {
+            Clients.Clear();
+
+            List<int> collection = args.Ids;
+            int count = collection.Count;
+            for (int i = 0; i < count; i++)
+            {
+                int id = collection[i];
+                Clients[id] = new NetworkConnection(NetworkManager, id);
+            }
         }
 
 
@@ -144,7 +189,10 @@ namespace FishNet.Managing.Client
 
             //Clear connection after so objects can update using current Connection value.
             if (!Started)
-                Connection = NetworkManager.EmptyConnection; 
+            { 
+                Connection = NetworkManager.EmptyConnection;
+                Clients.Clear();
+            }
 
             if (Started && NetworkManager.CanLog(LoggingType.Common))
                 Debug.Log($"Local client is connected to the server.");
@@ -221,6 +269,11 @@ namespace FishNet.Managing.Client
                 while (reader.Remaining > 0)
                 {
                     packetId = reader.ReadPacketId();
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+                    _incomingPacketIds.Enqueue(packetId);
+                    if (_incomingPacketIds.Count > 5)
+                        _incomingPacketIds.Dequeue();
+#endif
                     bool spawnOrDespawn = (packetId == PacketId.ObjectSpawn || packetId == PacketId.ObjectDespawn);
                     /* Length of data. Only available if using unreliable. Unreliable packets
                      * can arrive out of order which means object orientated messages such as RPCs may
@@ -296,7 +349,15 @@ namespace FishNet.Managing.Client
                         else
                         {
                             if (NetworkManager.CanLog(LoggingType.Error))
+                            {
                                 Debug.LogError($"Client received an unhandled PacketId of {(ushort)packetId}. Remaining data has been purged.");
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+                                StringBuilder sb = new StringBuilder();
+                                foreach (PacketId item in _incomingPacketIds)
+                                    sb.Insert(0, $"{item.ToString()}{Environment.NewLine}");
+                                Debug.LogError($"The last {_incomingPacketIds.Count} packets to arrive are: {Environment.NewLine}{sb.ToString()}");
+#endif
+                            }
                             return;
                         }
                     }
@@ -340,12 +401,12 @@ namespace FishNet.Managing.Client
             //If only a client then make a new connection.
             if (!NetworkManager.IsServer)
             {
-                Connection = new NetworkConnection(NetworkManager, connectionId);
+                Clients.TryGetValue(connectionId, out Connection);
             }
             /* If also the server then use the servers connection
              * for the connectionId. This is to resolve host problems
              * where LocalConnection for client differs from the server Connection
-             * reference, which results in different ield values. */
+             * reference, which results in different field values. */
             else
             {
                 if (NetworkManager.ServerManager.Clients.TryGetValue(connectionId, out NetworkConnection conn))

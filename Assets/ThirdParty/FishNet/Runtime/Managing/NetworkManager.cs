@@ -17,6 +17,7 @@ using System;
 using FishNet.Managing.Observing;
 using System.Linq;
 using FishNet.Utility.Extension;
+using FishNet.Managing.Debugging;
 
 namespace FishNet.Managing
 {
@@ -90,7 +91,7 @@ namespace FishNet.Managing
         /// </summary>
         public bool IsClient => (ClientManager.Started && ClientManager.Connection.Authenticated);
         /// <summary>
-        /// True if only the client is active, and authenticated.
+        /// True if only the client is active and authenticated.
         /// </summary>
         public bool IsClientOnly => (!IsServer && IsClient);
         /// <summary>
@@ -130,10 +131,14 @@ namespace FishNet.Managing
         /// </summary>
         public Authenticator Authenticator { get; private set; }
         /// <summary>
+        /// DebugManager for this NetworkManager.
+        /// </summary>
+        public DebugManager DebugManager { get; private set; }
+        /// <summary>
         /// An empty connection reference. Used when a connection cannot be found to prevent object creation.
         /// </summary>
         [APIExclude]
-        public NetworkConnection EmptyConnection { get; private set; } = new NetworkConnection();
+        public static NetworkConnection EmptyConnection { get; private set; } = new NetworkConnection();
         #endregion
 
         #region Serialized.
@@ -173,7 +178,7 @@ namespace FishNet.Managing
 
 
         private void Awake()
-        {            
+        {
             InitializeLogging();
 
             _canPersist = CanInitialize();
@@ -189,6 +194,7 @@ namespace FishNet.Managing
             SpawnablePrefabs.InitializePrefabRange(0);
             SetDontDestroyOnLoad();
             SetRunInBackground();
+            AddDebugManager();
             AddTransportManager();
             AddServerAndClientManagers();
             AddTimeManager();
@@ -314,6 +320,18 @@ namespace FishNet.Managing
         private void SetRunInBackground()
         {
             Application.runInBackground = _runInBackground;
+        }
+
+
+        /// <summary>
+        /// Adds DebugManager.
+        /// </summary>
+        private void AddDebugManager()
+        {
+            if (gameObject.TryGetComponent<DebugManager>(out DebugManager result))
+                DebugManager = result;
+            else
+                DebugManager = gameObject.AddComponent<DebugManager>();
         }
 
         /// <summary>

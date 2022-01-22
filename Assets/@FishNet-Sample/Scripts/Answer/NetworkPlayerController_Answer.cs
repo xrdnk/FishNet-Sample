@@ -1,5 +1,6 @@
 ﻿using System.Collections;
 using FishNet.Component.Animating;
+using FishNet.Component.Transforming;
 using FishNet.Object;
 using UnityEngine;
 
@@ -10,6 +11,7 @@ namespace xrdnk.FishNet_Sample.Scripts.Answer
     /// </summary>
     [RequireComponent(typeof(Animator))]
     [RequireComponent(typeof(NetworkAnimator))]
+    [RequireComponent(typeof(NetworkTransform))]
     [RequireComponent(typeof(Rigidbody))]
     public sealed class NetworkPlayerController_Answer : NetworkBehaviour
     {
@@ -111,6 +113,8 @@ namespace xrdnk.FishNet_Sample.Scripts.Answer
             _animator.SetFloat(MoveVerticalAnimation, ver);
 
             var direction = new Vector3(hor, 0, ver) * _moveRate * Time.deltaTime;
+
+            // NOTE: NetworkTransform コンポーネントがアタッチされている場合，自動的に Transform の同期処理が走る
             transform.position += transform.TransformDirection(direction);
         }
 
@@ -128,8 +132,9 @@ namespace xrdnk.FishNet_Sample.Scripts.Answer
             // FixedUpdate のタイミングで Rigidbody 関連の処理が出来るようにライフサイクルのタイミング調整
             yield return new WaitForFixedUpdate();
 
-            _networkAnimator.SetTrigger(JumpAnimation);
             _rigidbody.AddForce(transform.up * _jumpPower, ForceMode.Impulse);
+            // NOTE: Fish-Net では，NetworkAnimation.SetTrigger を通して呼ぶことで Trigger 型アニメーションの同期が走る
+            _networkAnimator.SetTrigger(JumpAnimation);
         }
     }
 }

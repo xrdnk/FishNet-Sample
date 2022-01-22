@@ -87,8 +87,8 @@ namespace FishNet.Managing.Object
                 return;
             }
 
-            nob.Deinitialize(asServer);
-
+            //True if should be destroyed, false if deactivated.
+            bool destroy = true;
             /* Only modify object state if asServer,
              * or !asServer and not host. This is so clients, when acting as
              * host, don't destroy objects they lost observation of. */
@@ -98,7 +98,7 @@ namespace FishNet.Managing.Object
                 //Scene object.
                 if (nob.SceneObject)
                 {
-                    nob.gameObject.SetActive(false);
+                    destroy = false;
                 }
                 //Not a scene object, destroy normally.
                 else
@@ -108,12 +108,12 @@ namespace FishNet.Managing.Object
                      * message. Otherwise destroy immediately. */
                     if (nob.Observers.Contains(NetworkManager.ClientManager.Connection))
                     {
-                        nob.gameObject.SetActive(false);
+                        destroy = false;
                         NetworkManager.ServerManager.Objects.AddToPending(nob);
                     }
                     else
                     {
-                        MonoBehaviour.Destroy(nob.gameObject);
+                        destroy = true;
                     }
                 }
             }
@@ -123,9 +123,7 @@ namespace FishNet.Managing.Object
                 //Scene object.
                 if (nob.SceneObject)
                 {
-                    //If also server don't set inactive again, server would have already done so.
-                    if (!NetworkManager.IsServer)
-                        nob.gameObject.SetActive(false);
+                    destroy = false;
                 }
                 //Not a scene object, destroy normally.
                 else
@@ -135,11 +133,16 @@ namespace FishNet.Managing.Object
                      * side only to await destruction from client side.
                      * Objects can also be destroyed if server is not
                      * active. */
-                    bool canDestroy = (!NetworkManager.IsServer || NetworkManager.ServerManager.Objects.RemoveFromPending(nob.ObjectId));
-                    if (canDestroy)
-                        MonoBehaviour.Destroy(nob.gameObject);
+                    destroy = (!NetworkManager.IsServer || NetworkManager.ServerManager.Objects.RemoveFromPending(nob.ObjectId));
                 }
             }
+
+            //Deinitialize then destroy/deactivate.
+            nob.Deinitialize(asServer);
+            if (destroy)
+                MonoBehaviour.Destroy(nob.gameObject);
+            else
+                nob.gameObject.SetActive(false);
 
             RemoveFromSpawned(nob, false);
         }
@@ -164,6 +167,7 @@ namespace FishNet.Managing.Object
             //Null can occur when running as host and server already despawns such as wehen stopping.
             if (nob == null)
                 return;
+
             nob.Deinitialize(asServer);
             /* Only run if asServer, or not 
             * asServer and server isn't running. This

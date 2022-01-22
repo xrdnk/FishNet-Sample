@@ -94,7 +94,7 @@ namespace FishNet.Object
 
             if (_replicateRpcDelegates.TryGetValue(methodHash.Value, out ReplicateRpcDelegate del))
             {
-                del.Invoke(this, reader, sendingClient); 
+                del.Invoke(this, reader, sendingClient);
             }
             else
             {
@@ -128,8 +128,15 @@ namespace FishNet.Object
         /// Clears cached replicates. This can be useful to call on server and client after teleporting.
         /// </summary>
         /// <param name="asServer">True to reset values for server, false to reset values for client.</param>
-        public virtual void ClearReplicateCache(bool asServer) { }
-        
+        public void ClearReplicateCache(bool asServer) { InternalClearReplicateCache(asServer); }
+        /// <summary>
+        /// Clears cached replicates.
+        /// For internal use only.
+        /// </summary>
+        /// <param name="asServer"></param>
+        [APIExclude]
+        protected internal virtual void InternalClearReplicateCache(bool asServer) { }
+
         /// <summary>
         /// Writes number of past inputs from buffer to writer and sends it to the server.
         /// Internal use. 
@@ -175,20 +182,24 @@ namespace FishNet.Object
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void SendReconcileRpc<T>(uint hash, T reconcileData, Channel channel)
         {
-            if (!IsSpawnedWithWarning())
+            if (!IsSpawned)
                 return;
-            if (!OwnerIsActive)
+            if (!Owner.IsActive)
                 return;
 
             PooledWriter methodWriter = WriterPool.GetWriter();
             methodWriter.Write(reconcileData);
 
             PooledWriter writer;
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+            if (NetworkManager.DebugManager.ReconcileRpcLinks && _rpcLinks.TryGetValue(hash, out RpcLinkType link))
+#else
             if (_rpcLinks.TryGetValue(hash, out RpcLinkType link))
+#endif
                 writer = CreateLinkedRpc(link, methodWriter, channel);
             else
                 writer = CreateRpc(hash, methodWriter, PacketId.Reconcile, channel);
-            
+
             NetworkObject.NetworkManager.TransportManager.SendToClient((byte)channel, writer.GetArraySegment(), Owner);
 
             methodWriter.Dispose();
