@@ -28,6 +28,7 @@ nor to content or works created specifically to be used with Software, such as t
 MIT License
 
 Copyright (c) 2018 Greg M
+
 Copyright (c) 2020 Ian and Contributors
 
 # ライセンス
