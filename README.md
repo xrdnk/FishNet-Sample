@@ -2,6 +2,11 @@
 
 本リポジトリは「Fish-NetでUnityのマルチプレイゲームを作ろう」のサンプルプロジェクトです．
 
+以下のページで販売されております．
+[BOOTH](https://deniverse.booth.pm/items/3602477)
+[技術書典12](https://techbookfest.org/product/5978890134618112?productVariantID=4758962924683264)
+
+
 # 検証環境
 
  * Unity 2021.2.8f1
